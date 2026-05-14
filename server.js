@@ -8,14 +8,15 @@ const { Marked } = require('marked');
 const { gfmHeadingId } = require('marked-gfm-heading-id');
 const hljs = require('highlight.js');
 const { execSync } = require('child_process');
-const readline = require('readline');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const WIKI_REPO_URL = 'https://github.com/DevExpress/wiki-dx.git';
 
-// Config management - persist wiki-dx repo path
-const CONFIG_DIR = path.join(os.homedir(), '.wiki-dx-viewer');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+// Data directory - stores the cloned repo
+const DATA_DIR = path.join(os.homedir(), '.wiki-dx-viewer');
+const REPO_DIR = path.join(DATA_DIR, 'wiki-dx');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -25,82 +26,68 @@ function loadConfig() {
 }
 
 function saveConfig(config) {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-function validateWikiDxPath(p) {
-  const docsDir = path.join(p, 'docs');
+function isRepoCloned() {
+  const docsDir = path.join(REPO_DIR, 'docs');
   if (!fs.existsSync(docsDir)) return false;
-  // Check at least one wiki with mkdocs.yml exists
   const entries = fs.readdirSync(docsDir, { withFileTypes: true });
   return entries.some(e => e.isDirectory() && fs.existsSync(path.join(docsDir, e.name, 'mkdocs.yml')));
 }
 
-async function promptForPath() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    console.log('\n  ┌─────────────────────────────────────────────────┐');
-    console.log('  │         Wiki DX Viewer - First Time Setup        │');
-    console.log('  └─────────────────────────────────────────────────┘\n');
-    console.log('  Please provide the path to your local wiki-dx repository.');
-    console.log('  This is the folder containing the "docs/" directory.\n');
+function cloneRepo() {
+  console.log('\n  ┌─────────────────────────────────────────────────┐');
+  console.log('  │         Wiki DX Viewer - First Time Setup        │');
+  console.log('  └─────────────────────────────────────────────────┘\n');
+  console.log(`  📦 Cloning wiki-dx repository...`);
+  console.log(`     From: ${WIKI_REPO_URL}`);
+  console.log(`     To:   ${REPO_DIR}\n`);
 
-    const ask = () => {
-      rl.question('  wiki-dx repo path: ', (answer) => {
-        const resolved = path.resolve(answer.trim().replace(/^["']|["']$/g, ''));
-        if (validateWikiDxPath(resolved)) {
-          rl.close();
-          resolve(resolved);
-        } else {
-          console.log(`\n  ⚠️  Invalid path. Could not find wiki docs at: ${resolved}/docs/`);
-          console.log('  Make sure this is the root of the wiki-dx repository.\n');
-          ask();
-        }
-      });
-    };
-    ask();
-  });
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  execSync(`git clone --depth 1 "${WIKI_REPO_URL}" "${REPO_DIR}"`, { stdio: 'inherit' });
+  console.log('\n  ✅ Repository cloned successfully!\n');
 }
 
-async function getDocsRoot() {
-  // 1. Check CLI argument: --wiki-path <path>
+function pullRepo() {
+  console.log('  🔄 Updating wiki-dx repository...');
+  try {
+    execSync('git pull --ff-only', { cwd: REPO_DIR, stdio: 'pipe' });
+    console.log('  ✅ Up to date.\n');
+  } catch (err) {
+    console.log('  ⚠️  Could not update (working offline or conflict). Using existing content.\n');
+  }
+}
+
+function getDocsRoot() {
+  // Allow override via CLI arg or env var
   const argIdx = process.argv.indexOf('--wiki-path');
   if (argIdx !== -1 && process.argv[argIdx + 1]) {
-    const p = path.resolve(process.argv[argIdx + 1]);
-    if (validateWikiDxPath(p)) {
-      saveConfig({ ...loadConfig(), wikiDxPath: p });
-      return path.join(p, 'docs');
-    }
-    console.error(`  ⚠️  Invalid --wiki-path: ${p}`);
-    process.exit(1);
+    return path.join(path.resolve(process.argv[argIdx + 1]), 'docs');
   }
-
-  // 2. Check environment variable
   if (process.env.WIKI_DX_PATH) {
-    const p = path.resolve(process.env.WIKI_DX_PATH);
-    if (validateWikiDxPath(p)) return path.join(p, 'docs');
-    console.error(`  ⚠️  Invalid WIKI_DX_PATH: ${p}`);
+    return path.join(path.resolve(process.env.WIKI_DX_PATH), 'docs');
   }
 
-  // 3. Check persisted config
-  const config = loadConfig();
-  if (config.wikiDxPath && validateWikiDxPath(config.wikiDxPath)) {
-    return path.join(config.wikiDxPath, 'docs');
+  // Auto-clone or pull
+  if (!isRepoCloned()) {
+    cloneRepo();
+  } else if (!process.argv.includes('--offline')) {
+    pullRepo();
   }
 
-  // 4. Prompt user on first run
-  const wikiPath = await promptForPath();
-  saveConfig({ ...loadConfig(), wikiDxPath: wikiPath });
-  console.log(`\n  ✅ Saved! Config stored at: ${CONFIG_FILE}\n`);
-  return path.join(wikiPath, 'docs');
+  return path.join(REPO_DIR, 'docs');
 }
 
 // --- Main startup ---
-(async () => {
-  const DOCS_ROOT = await getDocsRoot();
+(function () {
+  const DOCS_ROOT = getDocsRoot();
 
 // Markdown renderer setup
 const marked = new Marked();
@@ -292,21 +279,19 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Config API - get/update wiki-dx path
+// Config API - view status
 app.get('/api/config', (req, res) => {
-  const config = loadConfig();
-  res.json({ wikiDxPath: config.wikiDxPath || null, configFile: CONFIG_FILE });
+  res.json({ repoDir: REPO_DIR, docsRoot: DOCS_ROOT, configDir: DATA_DIR });
 });
 
-app.post('/api/config', (req, res) => {
-  const { wikiDxPath } = req.body;
-  if (!wikiDxPath) return res.status(400).json({ error: 'wikiDxPath required' });
-  const resolved = path.resolve(wikiDxPath);
-  if (!validateWikiDxPath(resolved)) {
-    return res.status(400).json({ error: `Invalid path: ${resolved}. Could not find wiki docs.` });
+// Force re-pull the repo
+app.post('/api/config/update', (req, res) => {
+  try {
+    execSync('git pull --ff-only', { cwd: REPO_DIR, encoding: 'utf8' });
+    res.json({ success: true, message: 'Repository updated.' });
+  } catch (err) {
+    res.status(500).json({ error: `Pull failed: ${err.message}` });
   }
-  saveConfig({ ...loadConfig(), wikiDxPath: resolved });
-  res.json({ success: true, message: 'Config updated. Restart the server to apply.' });
 });
 
 // SPA fallback

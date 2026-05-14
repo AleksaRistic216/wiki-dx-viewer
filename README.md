@@ -1,14 +1,14 @@
 # Wiki DX Viewer
 
-A local web app that serves DevExpress wiki content with an integrated AI chat sidebar powered by GitHub Copilot.
+A local web app that serves DevExpress wiki content with an integrated AI chat sidebar powered by GitHub Models API.
 
 ## Prerequisites
 
 - **Node.js** (LTS recommended) — [https://nodejs.org](https://nodejs.org)
+- **Git** — for cloning/updating the wiki repository
 - **GitHub CLI** (`gh`) — [https://cli.github.com](https://cli.github.com)
   - Must be authenticated: run `gh auth login` before starting
-  - Your account must have GitHub Copilot access (for AI chat)
-- **wiki-dx repository** cloned locally — [DevExpress/wiki-dx](https://github.com/DevExpress/wiki-dx)
+  - Required for AI chat (uses your GitHub token with GitHub Models API)
 
 ## Quick Start
 
@@ -18,42 +18,44 @@ npm install
 npm start
 ```
 
-On **first run**, you'll be prompted to enter the path to your local `wiki-dx` repository. This is saved to `~/.wiki-dx-viewer/config.json` and reused on subsequent starts.
+On **first run**, the app automatically clones the [wiki-dx](https://github.com/DevExpress/wiki-dx) repository to `~/.wiki-dx-viewer/wiki-dx/`. On subsequent starts, it pulls the latest changes.
 
 Then open [http://localhost:4000](http://localhost:4000) in your browser.
 
-## Configuration
+## CLI Options
 
-The wiki-dx repo path can be provided in three ways (checked in this order):
+| Flag | Description |
+|------|-------------|
+| `--wiki-path <path>` | Use a local wiki-dx repo instead of auto-cloning |
+| `--offline` | Skip `git pull` on startup (use cached content) |
 
-1. **CLI argument**: `npm start -- --wiki-path /path/to/wiki-dx`
-2. **Environment variable**: `WIKI_DX_PATH=/path/to/wiki-dx npm start`
-3. **Persisted config**: Saved in `~/.wiki-dx-viewer/config.json` after first-run prompt
+## Environment Variables
 
-To change the saved path, either edit `~/.wiki-dx-viewer/config.json` or run with `--wiki-path`.
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `PORT` | `4000` | Port to serve on |
-| `WIKI_DX_PATH` | — | Path to wiki-dx repository |
+| `WIKI_DX_PATH` | — | Override: path to a local wiki-dx repository |
 
 ## Features
 
-- **Wiki selector** — browse all team wikis from the repository
+- **Wiki selector** — browse all team wikis
 - **Navigation tree** — parsed from each wiki's `mkdocs.yml`
-- **Markdown rendering** — with syntax highlighting and GitHub-style formatting
-- **Full-text search** — search within the currently selected wiki
+- **Markdown rendering** — with syntax highlighting
+- **Full-text search** — search within the selected wiki
 - **AI Chat** — context-aware chat that knows your current page and wiki structure
-- **Dark/Light mode** — follows your system preference
+- **Dark/Light mode** — follows system preference
+- **Auto-update** — pulls latest wiki content on each startup
 
 ## How AI Chat Works
 
-The chat sidebar connects to the GitHub Models API using your `gh` authentication token. It sends:
+The chat sidebar uses the GitHub Models API (authenticated via your `gh` token). It automatically includes:
 - The current wiki's navigation structure
-- The content of the page you're currently viewing
+- The full content of the page you're viewing
 
-This means the AI knows exactly what you're looking at and can help navigate, explain, or find related content.
+This means the AI knows exactly what you're reading and can help navigate, explain, or answer questions.
 
-## Cross-Platform
+## Data Storage
 
-Works on Windows, macOS, and Linux — anywhere Node.js and the GitHub CLI are available.
+All data is stored in `~/.wiki-dx-viewer/`:
+- `wiki-dx/` — the cloned repository (shallow clone)
+- `config.json` — configuration
