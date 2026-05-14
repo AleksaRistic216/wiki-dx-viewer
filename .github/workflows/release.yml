@@ -106,7 +106,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2"
+        run: npm install -g @tauri-apps/cli@^2
 
       - name: Build Next.js
         run: |
@@ -194,7 +194,7 @@ jobs:
           TAURI_CONFIG: '{"bundle":{"resources":["resources/**/*"]}}'
         run: |
           cd src-tauri
-          cargo tauri build
+          npx tauri build
 
       - name: Upload artifacts (Linux)
         if: matrix.target == 'linux'
