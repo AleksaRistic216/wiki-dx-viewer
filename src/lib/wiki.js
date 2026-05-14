@@ -61,6 +61,21 @@ function cloneRepo() {
   execSync(`gh repo clone DevExpress/wiki-dx "${REPO_DIR}" -- --depth 1`, { stdio: 'inherit' });
 }
 
+function syncRepo() {
+  if (process.env.WIKI_DX_PATH) {
+    const repoPath = path.resolve(process.env.WIKI_DX_PATH);
+    execSync('git pull', { cwd: repoPath, stdio: 'pipe' });
+    return;
+  }
+
+  if (!isRepoCloned()) {
+    cloneRepo();
+    return;
+  }
+
+  execSync('git pull', { cwd: REPO_DIR, stdio: 'pipe' });
+}
+
 function listWikis() {
   const docsRoot = getDocsRoot();
   const entries = fs.readdirSync(docsRoot, { withFileTypes: true });
@@ -87,6 +102,85 @@ function getWikiNav(wikiId) {
   return { name: yml.site_name, nav: yml.nav || [] };
 }
 
+function preprocessTabs(markdown) {
+  // Convert MkDocs tabbed syntax (=== "Title") into HTML tabs
+  const lines = markdown.split('\n');
+  const result = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const tabMatch = lines[i].match(/^===\s+"([^"]+)"\s*$/);
+    if (!tabMatch) {
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    // Collect all tabs in this group
+    const tabs = [];
+    while (i < lines.length) {
+      // Skip blank lines between tabs
+      while (i < lines.length && lines[i].trim() === '') {
+        // Peek ahead to see if there's another tab coming
+        let peekIdx = i + 1;
+        while (peekIdx < lines.length && lines[peekIdx].trim() === '') peekIdx++;
+        if (peekIdx < lines.length && lines[peekIdx].match(/^===\s+"[^"]+"\s*$/)) {
+          i++;
+          continue;
+        }
+        break;
+      }
+
+      const match = lines[i]?.match(/^===\s+"([^"]+)"\s*$/);
+      if (!match) break;
+
+      const title = match[1];
+      i++;
+      const contentLines = [];
+
+      // Collect indented content lines (4 spaces or 1 tab)
+      while (i < lines.length) {
+        if (lines[i].match(/^===\s+"[^"]+"\s*$/)) break;
+        if (lines[i].match(/^    /) || lines[i].match(/^\t/)) {
+          contentLines.push(lines[i].replace(/^    /, '').replace(/^\t/, ''));
+          i++;
+        } else if (lines[i].trim() === '') {
+          // Blank line - check if next content is still indented or another tab
+          let peekIdx = i + 1;
+          while (peekIdx < lines.length && lines[peekIdx].trim() === '') peekIdx++;
+          if (peekIdx < lines.length && (lines[peekIdx].match(/^    /) || lines[peekIdx].match(/^\t/) || lines[peekIdx].match(/^===\s+"[^"]+"\s*$/))) {
+            contentLines.push('');
+            i++;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+
+      tabs.push({ title, content: contentLines.join('\n').trim() });
+    }
+
+    if (tabs.length > 0) {
+      const tabId = `tab-${Math.random().toString(36).slice(2, 8)}`;
+      let tabHtml = `<div class="wiki-tabs" data-tab-group="${tabId}">`;
+      tabHtml += `<div class="wiki-tabs-nav">`;
+      tabs.forEach((tab, idx) => {
+        tabHtml += `<button class="wiki-tab-btn${idx === 0 ? ' active' : ''}" data-tab-index="${idx}" data-tab-group="${tabId}">${tab.title}</button>`;
+      });
+      tabHtml += `</div>`;
+      tabs.forEach((tab, idx) => {
+        tabHtml += `<div class="wiki-tab-panel${idx === 0 ? ' active' : ''}" data-tab-index="${idx}" data-tab-group="${tabId}">\n\n${tab.content}\n\n</div>`;
+      });
+      tabHtml += `</div>`;
+      result.push(tabHtml);
+    }
+  }
+
+  return result.join('\n');
+}
+
 function getWikiPage(wikiId, pagePath) {
   const docsRoot = getDocsRoot();
   const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
@@ -100,7 +194,22 @@ function getWikiPage(wikiId, pagePath) {
   if (!fs.existsSync(filePath)) return null;
 
   const mdContent = fs.readFileSync(filePath, 'utf8');
-  const html = marked.parse(mdContent);
+  const preprocessed = preprocessTabs(mdContent);
+  let html = marked.parse(preprocessed);
+
+  // Rewrite relative image paths to use the media API route
+  const pageDir = path.dirname(pagePath);
+  html = html.replace(/<img\s+([^>]*?)src="([^"]+)"([^>]*?)>/g, (match, before, src, after) => {
+    // Skip absolute URLs and data URIs
+    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:') || src.startsWith('/')) {
+      return match;
+    }
+    // Resolve relative path against page directory
+    const resolved = path.posix.normalize(path.posix.join(pageDir.replace(/\\/g, '/'), src));
+    const apiPath = `/api/wikis/${wikiId}/media/${resolved}`;
+    return `<img ${before}src="${apiPath}"${after}>`;
+  });
+
   return { path: pagePath, html, markdown: mdContent };
 }
 
@@ -140,10 +249,56 @@ function searchWiki(wikiId, query) {
   return results;
 }
 
+function searchWikiForChat(wikiId, query, excludePage) {
+  const docsRoot = getDocsRoot();
+  const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
+  if (!fs.existsSync(ymlPath)) return [];
+
+  const yml = loadYaml(ymlPath);
+  const docsDir = path.join(docsRoot, wikiId, yml.docs_dir || 'docs');
+  const results = [];
+
+  // Extract keywords (words with 3+ chars, skip common stop words)
+  const stopWords = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'how', 'what', 'when', 'where', 'which', 'who', 'will', 'with', 'this', 'that', 'from', 'they', 'would', 'there', 'their', 'about', 'could', 'does', 'should']);
+  const keywords = query.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !stopWords.has(w));
+
+  if (keywords.length === 0) return [];
+
+  function scoreFile(dir, prefix = '') {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        scoreFile(path.join(dir, entry.name), prefix + entry.name + '/');
+      } else if (entry.name.endsWith('.md')) {
+        const pagePath = prefix + entry.name;
+        if (pagePath === excludePage) continue;
+        const content = fs.readFileSync(path.join(dir, entry.name), 'utf8');
+        const lower = content.toLowerCase();
+        let score = 0;
+        for (const kw of keywords) {
+          const idx = lower.indexOf(kw);
+          if (idx !== -1) score++;
+        }
+        if (score > 0) {
+          results.push({ path: pagePath, content, score });
+        }
+      }
+    }
+  }
+
+  scoreFile(docsDir);
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, 5);
+}
+
 async function chat(messages, wiki, currentPage, pageContent) {
   const ghToken = execSync('gh auth token', { encoding: 'utf8' }).trim();
 
-  let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. Be concise and helpful.`;
+  let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. You have access to the entire wiki section the user is browsing, not just the current page. Be concise and helpful. When referencing other wiki pages, use markdown links with the page path.`;
 
   if (wiki) {
     const docsRoot = getDocsRoot();
@@ -162,8 +317,28 @@ async function chat(messages, wiki, currentPage, pageContent) {
   }
 
   if (pageContent) {
-    const trimmed = pageContent.length > 8000 ? pageContent.slice(0, 8000) + '\n\n[...content truncated...]' : pageContent;
+    const trimmed = pageContent.length > 6000 ? pageContent.slice(0, 6000) + '\n\n[...content truncated...]' : pageContent;
     systemMessage += `\n\nPage content (markdown):\n${trimmed}`;
+  }
+
+  // Search for relevant pages from the whole wiki based on the user's latest question
+  if (wiki && messages.length > 0) {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUserMsg) {
+      const relevantPages = searchWikiForChat(wiki, lastUserMsg.content, currentPage);
+      if (relevantPages.length > 0) {
+        systemMessage += `\n\n--- RELEVANT WIKI PAGES ---\nBelow are other pages from this wiki that may be relevant to the user's question:\n`;
+        let budgetRemaining = 12000;
+        for (const page of relevantPages) {
+          const content = page.content.length > budgetRemaining
+            ? page.content.slice(0, budgetRemaining) + '\n[...truncated...]'
+            : page.content;
+          budgetRemaining -= content.length;
+          systemMessage += `\n## Page: ${page.path}\n${content}\n`;
+          if (budgetRemaining <= 0) break;
+        }
+      }
+    }
   }
 
   const chatMessages = [{ role: 'system', content: systemMessage }, ...messages];
@@ -186,4 +361,4 @@ async function chat(messages, wiki, currentPage, pageContent) {
   return chatData.choices?.[0]?.message?.content || 'No response.';
 }
 
-module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat };
+module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, getDocsRoot, syncRepo };

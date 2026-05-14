@@ -7,8 +7,8 @@ A local web app that serves DevExpress wiki content with an integrated AI chat s
 - **Node.js** (LTS recommended) — [https://nodejs.org](https://nodejs.org)
 - **Git** — for cloning/updating the wiki repository
 - **GitHub CLI** (`gh`) — [https://cli.github.com](https://cli.github.com)
-  - Must be authenticated: run `gh auth login` before starting
-  - Required for AI chat (uses your GitHub token with GitHub Models API)
+  - Must be installed and authenticated: run `gh auth login` before starting
+  - The app uses your local `gh` installation to obtain an auth token for the GitHub Models API (AI chat) and for cloning the private wiki repository
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ Then open [http://localhost:4000](http://localhost:4000) in your browser.
 
 ## How AI Chat Works
 
-The chat sidebar uses the GitHub Models API (authenticated via your `gh` token). It automatically includes:
+The chat sidebar (labeled "Copilot Chat" in the UI) uses the **GitHub Models API** — not the GitHub Copilot API — authenticated via your `gh` CLI token (`gh auth token`). It automatically includes:
 - The current wiki's navigation structure
 - The full content of the page you're viewing
 

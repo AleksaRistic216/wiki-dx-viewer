@@ -105,7 +105,7 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
         {messages.length === 0 && (
           <Box textAlign="center" py={8}>
             <Text fontSize="sm" color="gray.500">
-              Ask anything about the current wiki page.
+              Ask anything about this wiki — I can search across all pages in the current section.
             </Text>
           </Box>
         )}
@@ -144,7 +144,7 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="Ask about this wiki..."
+          placeholder="Ask about this wiki section..."
           size="sm"
           rows={2}
           resize="none"

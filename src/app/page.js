@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Box,
   Flex,
@@ -13,28 +14,49 @@ import {
   useColorModeValue,
   Tooltip,
 } from '@chakra-ui/react';
-import { FiMenu, FiMessageSquare, FiSearch, FiSun, FiMoon } from 'react-icons/fi';
+import { FiMenu, FiMessageSquare, FiSearch, FiSun, FiMoon, FiRefreshCw } from 'react-icons/fi';
 import NavSidebar from '@/components/NavSidebar';
 import ContentArea from '@/components/ContentArea';
 import ChatPanel from '@/components/ChatPanel';
 
 export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomePageContent />
+    </Suspense>
+  );
+}
+
+function HomePageContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
   const [wikis, setWikis] = useState([]);
-  const [currentWiki, setCurrentWiki] = useState('');
+  const [currentWiki, setCurrentWiki] = useState(searchParams.get('wiki') || '');
   const [nav, setNav] = useState(null);
   const [page, setPage] = useState(null);
-  const [currentPagePath, setCurrentPagePath] = useState(null);
+  const [currentPagePath, setCurrentPagePath] = useState(searchParams.get('page') || null);
   const [currentPageMarkdown, setCurrentPageMarkdown] = useState(null);
   const [navOpen, setNavOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const { colorMode, toggleColorMode } = useColorMode();
   const searchTimeout = useRef(null);
+  const initialLoadDone = useRef(false);
 
   const bgBar = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+
+  const updateUrl = useCallback((wiki, pagePath) => {
+    const params = new URLSearchParams();
+    if (wiki) params.set('wiki', wiki);
+    if (pagePath) params.set('page', pagePath);
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : '/', { scroll: false });
+  }, [router]);
 
   useEffect(() => {
     fetch('/api/wikis')
@@ -43,11 +65,38 @@ export default function HomePage() {
       .catch(() => {});
   }, []);
 
+  // Restore state from URL on initial load
+  useEffect(() => {
+    if (initialLoadDone.current) return;
+    initialLoadDone.current = true;
+    const wikiParam = searchParams.get('wiki');
+    const pageParam = searchParams.get('page');
+    if (wikiParam) {
+      fetch(`/api/wikis/${wikiParam}/nav`)
+        .then(r => r.json())
+        .then(data => {
+          setNav(data);
+          if (pageParam) {
+            fetch(`/api/wikis/${wikiParam}/page/${pageParam}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(pageData => {
+                if (pageData) {
+                  setPage(pageData);
+                  setCurrentPageMarkdown(pageData.markdown);
+                }
+              });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [searchParams]);
+
   async function selectWiki(wikiId) {
     setCurrentWiki(wikiId);
     setPage(null);
     setCurrentPagePath(null);
     setCurrentPageMarkdown(null);
+    updateUrl(wikiId, null);
     if (!wikiId) { setNav(null); return; }
     const res = await fetch(`/api/wikis/${wikiId}/nav`);
     const data = await res.json();
@@ -61,6 +110,7 @@ export default function HomePage() {
     setPage(data);
     setCurrentPagePath(pagePath);
     setCurrentPageMarkdown(data.markdown);
+    updateUrl(currentWiki, pagePath);
   }
 
   function handleSearch(q) {
@@ -159,6 +209,23 @@ export default function HomePage() {
             </Box>
           )}
         </Box>
+
+        <Tooltip label="Sync wiki branch">
+          <IconButton
+            icon={<FiRefreshCw />}
+            aria-label="Sync wiki branch"
+            variant="ghost"
+            size="sm"
+            isLoading={syncing}
+            onClick={async () => {
+              setSyncing(true);
+              try {
+                await fetch('/api/sync', { method: 'POST' });
+              } catch {}
+              setSyncing(false);
+            }}
+          />
+        </Tooltip>
 
         <Tooltip label="Toggle color mode">
           <IconButton

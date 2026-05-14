@@ -1,8 +1,29 @@
 'use client';
 
+import { useEffect } from 'react';
 import { Box, Heading, Text, useColorModeValue } from '@chakra-ui/react';
 
 export default function ContentArea({ page }) {
+  useEffect(() => {
+    if (!page?.html) return;
+    const container = document.querySelector('.wiki-content');
+    if (!container) return;
+
+    const handleTabClick = (e) => {
+      const btn = e.target.closest('.wiki-tab-btn');
+      if (!btn) return;
+      const group = btn.dataset.tabGroup;
+      const index = btn.dataset.tabIndex;
+
+      container.querySelectorAll(`.wiki-tab-btn[data-tab-group="${group}"]`).forEach(b => b.classList.remove('active'));
+      container.querySelectorAll(`.wiki-tab-panel[data-tab-group="${group}"]`).forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      container.querySelector(`.wiki-tab-panel[data-tab-group="${group}"][data-tab-index="${index}"]`)?.classList.add('active');
+    };
+
+    container.addEventListener('click', handleTabClick);
+    return () => container.removeEventListener('click', handleTabClick);
+  }, [page?.html]);
   const bg = useColorModeValue('gray.50', 'gray.900');
   const contentBg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
@@ -102,15 +123,17 @@ export default function ContentArea({ page }) {
           'pre': {
             bg: useColorModeValue('gray.900', 'gray.950'),
             color: 'gray.100',
-            borderRadius: 'xl',
-            p: 5,
+            borderRadius: '0',
+            px: { base: 5, md: 10 },
+            py: 5,
+            mx: { base: -5, md: -10 },
             my: 6,
             overflowX: 'auto',
             fontSize: '13px',
             lineHeight: 1.7,
-            border: '1px solid',
+            borderTop: '1px solid',
+            borderBottom: '1px solid',
             borderColor: useColorModeValue('gray.200', 'gray.600'),
-            shadow: 'inner',
           },
           'code': { fontFamily: 'mono', fontSize: '0.87em' },
           ':not(pre) > code': {
@@ -182,6 +205,48 @@ export default function ContentArea({ page }) {
           },
           '& > *:first-child': { mt: 0 },
           '& > *:last-child': { mb: 0 },
+          '.wiki-tabs': {
+            my: 6,
+            borderRadius: 'xl',
+            border: '1px solid',
+            borderColor: borderColor,
+            overflow: 'hidden',
+          },
+          '.wiki-tabs-nav': {
+            display: 'flex',
+            gap: 0,
+            bg: useColorModeValue('gray.100', 'gray.700'),
+            borderBottom: '1px solid',
+            borderColor: borderColor,
+          },
+          '.wiki-tab-btn': {
+            px: 5,
+            py: 2.5,
+            fontSize: '14px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            border: 'none',
+            bg: 'transparent',
+            color: useColorModeValue('gray.600', 'gray.400'),
+            borderBottom: '2px solid transparent',
+            transition: 'all 0.15s',
+            _hover: {
+              color: useColorModeValue('gray.800', 'gray.200'),
+              bg: useColorModeValue('gray.200', 'gray.600'),
+            },
+          },
+          '.wiki-tab-btn.active': {
+            color: 'brand.500',
+            borderBottomColor: 'brand.500',
+            bg: useColorModeValue('white', 'gray.800'),
+          },
+          '.wiki-tab-panel': {
+            display: 'none',
+            p: 5,
+          },
+          '.wiki-tab-panel.active': {
+            display: 'block',
+          },
         }}
       />
     </Box>
