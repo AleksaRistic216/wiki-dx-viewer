@@ -35,6 +35,30 @@ function loadYaml(filePath) {
   return yaml.load(sanitized);
 }
 
+function findNavTitleForPage(wikiId, pagePath) {
+  const docsRoot = getDocsRoot();
+  const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
+  if (!fs.existsSync(ymlPath)) return null;
+  const yml = loadYaml(ymlPath);
+  if (!yml.nav) return null;
+
+  function searchNav(items) {
+    for (const item of items) {
+      if (typeof item === 'string') continue;
+      for (const [title, value] of Object.entries(item)) {
+        if (typeof value === 'string' && value === pagePath) return title;
+        if (Array.isArray(value)) {
+          const found = searchNav(value);
+          if (found) return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  return searchNav(yml.nav);
+}
+
 function getDocsRoot() {
   if (process.env.WIKI_DX_PATH) {
     return path.join(path.resolve(process.env.WIKI_DX_PATH), 'docs');
@@ -357,10 +381,27 @@ function buildTieredContext(wikiId, query, excludePage) {
   return context;
 }
 
-async function chat(messages, wiki, currentPage, pageContent) {
+async function fetchWithRetry(url, options, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status === 429 && attempt < retries) {
+      const retryAfter = parseInt(res.headers.get('retry-after') || '30', 10);
+      const waitMs = Math.min(retryAfter, 60) * 1000;
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      continue;
+    }
+    return res;
+  }
+}
+
+async function chat(messages, wiki, currentPage, pageContent, { enableEditing = false, model = 'gpt-4o' } = {}) {
   const ghToken = execSync('gh auth token', { encoding: 'utf8' }).trim();
 
   let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. You have access to the entire wiki section the user is browsing, not just the current page. Be concise and helpful. When referencing other wiki pages, use markdown links with the page path.`;
+
+  if (enableEditing) {
+    systemMessage += `\n\nYou can edit the current wiki page when the user asks you to make changes. Use the edit_page tool to apply edits. When editing, output the FULL updated page content (not just the changed part). Only edit when the user explicitly asks for a change.\n\nYou can also rename navigation menu entries using the edit_nav_entry tool. Use it when the user asks to translate or rename a menu item. The old_title must match exactly as shown in the wiki navigation structure above.`;
+  }
 
   if (wiki) {
     const docsRoot = getDocsRoot();
@@ -378,10 +419,18 @@ async function chat(messages, wiki, currentPage, pageContent) {
 
   if (currentPage) {
     systemMessage += `\n\n--- CURRENT PAGE ---\nThe user is currently viewing: "${currentPage}"`;
+    if (wiki && enableEditing) {
+      const navTitle = findNavTitleForPage(wiki, currentPage);
+      if (navTitle) {
+        systemMessage += `\nThe navigation menu entry for this page is: "${navTitle}"`;
+      }
+    }
   }
 
   if (pageContent) {
-    const trimmed = pageContent.length > 2000 ? pageContent.slice(0, 2000) + '\n\n[...content truncated...]' : pageContent;
+    // When editing is enabled, provide full content so the AI can edit it
+    const maxLen = enableEditing ? 15000 : 2000;
+    const trimmed = pageContent.length > maxLen ? pageContent.slice(0, maxLen) + '\n\n[...content truncated...]' : pageContent;
     systemMessage += `\n\nPage content (markdown):\n${trimmed}`;
   }
 
@@ -395,13 +444,65 @@ async function chat(messages, wiki, currentPage, pageContent) {
 
   const chatMessages = [{ role: 'system', content: systemMessage }, ...messages];
 
-  const chatRes = await fetch('https://models.inference.ai.azure.com/chat/completions', {
+  const tools = enableEditing && currentPage ? [
+    {
+      type: 'function',
+      function: {
+        name: 'edit_page',
+        description: 'Edit the current wiki page. Provide the full updated markdown content of the page.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: {
+              type: 'string',
+              description: 'The full updated markdown content for the page'
+            },
+            summary: {
+              type: 'string',
+              description: 'A brief summary of what was changed'
+            }
+          },
+          required: ['content', 'summary']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'edit_nav_entry',
+        description: 'Rename a navigation menu entry in the wiki\'s mkdocs.yml. Use this when the user asks to translate or rename a menu/nav item.',
+        parameters: {
+          type: 'object',
+          properties: {
+            old_title: {
+              type: 'string',
+              description: 'The current title of the nav entry to rename'
+            },
+            new_title: {
+              type: 'string',
+              description: 'The new title for the nav entry'
+            },
+            summary: {
+              type: 'string',
+              description: 'A brief summary of the change'
+            }
+          },
+          required: ['old_title', 'new_title', 'summary']
+        }
+      }
+    }
+  ] : undefined;
+
+  const requestBody = { model, messages: chatMessages };
+  if (tools) requestBody.tools = tools;
+
+  const chatRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${ghToken}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ model: 'gpt-4o', messages: chatMessages })
+    body: JSON.stringify(requestBody)
   });
 
   if (!chatRes.ok) {
@@ -410,7 +511,77 @@ async function chat(messages, wiki, currentPage, pageContent) {
   }
 
   const chatData = await chatRes.json();
-  return chatData.choices?.[0]?.message?.content || 'No response.';
+  const choice = chatData.choices?.[0];
+
+  if (!choice) return { reply: 'No response.' };
+
+  // Handle tool calls
+  if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
+    const toolResults = [];
+    let editSummary = '';
+    let anyEdited = false;
+
+    for (const toolCall of choice.message.tool_calls) {
+      const args = JSON.parse(toolCall.function.arguments);
+
+      if (toolCall.function.name === 'edit_page') {
+        const { startSession, savePage, loadSession } = require('./editing');
+        if (!loadSession()) {
+          startSession();
+        }
+        savePage(wiki, currentPage, args.content);
+        toolResults.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ success: true, summary: args.summary })
+        });
+        editSummary = args.summary;
+        anyEdited = true;
+      } else if (toolCall.function.name === 'edit_nav_entry') {
+        const { editNavEntry, startSession, loadSession } = require('./editing');
+        if (!loadSession()) {
+          startSession();
+        }
+        editNavEntry(wiki, args.old_title, args.new_title);
+        toolResults.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ success: true, summary: args.summary })
+        });
+        editSummary = args.summary;
+        anyEdited = true;
+      }
+    }
+
+    if (toolResults.length > 0) {
+      // Get a follow-up response from the AI confirming the edits
+      const followUpMessages = [
+        ...chatMessages,
+        choice.message,
+        ...toolResults
+      ];
+
+      const followUpRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ghToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ model, messages: followUpMessages })
+      });
+
+      let reply = `✅ ${editSummary}`;
+      if (followUpRes.ok) {
+        const followUpData = await followUpRes.json();
+        const followUpContent = followUpData.choices?.[0]?.message?.content;
+        if (followUpContent) reply = followUpContent;
+      }
+
+      return { reply, edited: anyEdited, summary: editSummary };
+    }
+  }
+
+  return { reply: choice.message.content || 'No response.' };
 }
 
 module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, getDocsRoot, syncRepo };

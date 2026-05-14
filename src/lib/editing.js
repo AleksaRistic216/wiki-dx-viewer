@@ -192,4 +192,61 @@ function savePage(wikiId, pagePath, content) {
   return { saved: true, path: pagePath };
 }
 
-module.exports = { startSession, discardSession, completeSession, getStatus, savePage, loadSession };
+function editNavEntry(wikiId, oldTitle, newTitle) {
+  const session = loadSession();
+  if (!session) throw new Error('No active editing session. Start one first.');
+
+  const { getDocsRoot } = require('./wiki');
+  const docsRoot = getDocsRoot();
+  const yaml = require('js-yaml');
+
+  const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
+  if (!fs.existsSync(ymlPath)) throw new Error(`Wiki "${wikiId}" not found`);
+
+  const ymlContent = fs.readFileSync(ymlPath, 'utf8');
+
+  // Replace the nav entry title using string replacement to preserve formatting
+  // Nav entries look like: - "Old Title": path/to/page.md  or  - Old Title: path/to/page.md
+  const patterns = [
+    // Quoted: - "Old Title":
+    new RegExp(`^(\\s*-\\s*)"${escapeRegex(oldTitle)}"(\\s*:)`, 'gm'),
+    // Quoted single: - 'Old Title':
+    new RegExp(`^(\\s*-\\s*)'${escapeRegex(oldTitle)}'(\\s*:)`, 'gm'),
+    // Unquoted: - Old Title:
+    new RegExp(`^(\\s*-\\s*)${escapeRegex(oldTitle)}(\\s*:)`, 'gm'),
+  ];
+
+  let updated = ymlContent;
+  let replaced = false;
+
+  for (const pattern of patterns) {
+    const testResult = pattern.test(updated);
+    pattern.lastIndex = 0; // Reset after test() with global flag
+    if (testResult) {
+      updated = updated.replace(pattern, `$1"${newTitle}"$2`);
+      replaced = true;
+      break;
+    }
+  }
+
+  if (!replaced) {
+    throw new Error(`Nav entry "${oldTitle}" not found in ${wikiId}/mkdocs.yml`);
+  }
+
+  fs.writeFileSync(ymlPath, updated, 'utf8');
+
+  // Track modified file
+  const trackPath = `${wikiId}/mkdocs.yml`;
+  if (!session.modifiedFiles.includes(trackPath)) {
+    session.modifiedFiles.push(trackPath);
+    saveSession(session);
+  }
+
+  return { saved: true, oldTitle, newTitle };
+}
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+module.exports = { startSession, discardSession, completeSession, getStatus, savePage, editNavEntry, loadSession };

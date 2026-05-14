@@ -30,6 +30,7 @@ import { FiMenu, FiMessageSquare, FiSearch, FiSun, FiMoon, FiRefreshCw, FiEdit2,
 import NavSidebar from '@/components/NavSidebar';
 import ContentArea from '@/components/ContentArea';
 import ChatPanel from '@/components/ChatPanel';
+import DiagnosticsPanel from '@/components/DiagnosticsPanel';
 
 export default function HomePage() {
   return (
@@ -418,6 +419,8 @@ function HomePageContent() {
             color={chatOpen ? 'brand.500' : undefined}
           />
         </Tooltip>
+
+        <DiagnosticsPanel />
       </Flex>
 
       {/* Main Area */}
@@ -443,6 +446,20 @@ function HomePageContent() {
             currentPage={currentPagePath}
             pageContent={currentPageMarkdown}
             onNavigate={loadPage}
+            onPageEdited={() => {
+              // Refresh the page content, nav, and edit session status after AI edit
+              if (currentPagePath) loadPage(currentPagePath);
+              if (currentWiki) {
+                fetch(`/api/wikis/${currentWiki}/nav`)
+                  .then(r => r.json())
+                  .then(data => setNav(data))
+                  .catch(() => {});
+              }
+              fetch('/api/edit/status')
+                .then(r => r.json())
+                .then(data => { if (data.active) setEditSession(data); })
+                .catch(() => {});
+            }}
           />
         )}
       </Flex>

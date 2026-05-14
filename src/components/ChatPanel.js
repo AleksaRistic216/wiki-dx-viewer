@@ -9,12 +9,30 @@ import {
   IconButton,
   Text,
   VStack,
+  Select,
   useColorModeValue,
 } from '@chakra-ui/react';
-import { FiSend, FiTrash2, FiSquare } from 'react-icons/fi';
+import { FiSend, FiTrash2, FiSquare, FiRefreshCw } from 'react-icons/fi';
 
-export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }) {
+const AVAILABLE_MODELS = [
+  { id: 'gpt-4o', label: 'GPT-4o' },
+  { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  { id: 'o4-mini', label: 'o4-mini' },
+  { id: 'gpt-4.1', label: 'GPT-4.1' },
+  { id: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+  { id: 'gpt-4.1-nano', label: 'GPT-4.1 Nano' },
+  { id: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
+  { id: 'claude-opus-4', label: 'Claude Opus 4' },
+  { id: 'claude-haiku-3.5', label: 'Claude Haiku 3.5' },
+];
+
+export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, onPageEdited }) {
   const storageKey = `chat:${wiki || ''}:${currentPage || ''}`;
+
+  const [model, setModel] = useState(() => {
+    if (typeof window === 'undefined') return 'gpt-4o';
+    return localStorage.getItem('chat:model') || 'gpt-4o';
+  });
 
   const [messages, setMessages] = useState(() => {
     if (typeof window === 'undefined') return [];
@@ -86,6 +104,8 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
           wiki,
           currentPage,
           pageContent,
+          enableEditing: true,
+          model,
         }),
         signal: controller.signal,
       });
@@ -94,12 +114,62 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
         setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${data.error}` }]);
       } else {
         setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
+        if (data.edited && onPageEdited) {
+          onPageEdited();
+        }
       }
     } catch (err) {
       if (err.name === 'AbortError') {
         setMessages([...newMessages, { role: 'assistant', content: '⏹️ Request cancelled.' }]);
       } else {
         setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${err.message}` }]);
+      }
+    }
+    abortControllerRef.current = null;
+    setLoading(false);
+  }
+
+  async function resend() {
+    if (loading) return;
+    // Find the last user message and remove the assistant reply after it
+    const lastAssistantIdx = messages.length - 1;
+    if (lastAssistantIdx < 1 || messages[lastAssistantIdx].role !== 'assistant') return;
+
+    const messagesWithoutLastReply = messages.slice(0, lastAssistantIdx);
+    setMessages(messagesWithoutLastReply);
+    setLoading(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: messagesWithoutLastReply,
+          wiki,
+          currentPage,
+          pageContent,
+          enableEditing: true,
+          model,
+        }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (data.error) {
+        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: `⚠️ ${data.error}` }]);
+      } else {
+        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: data.reply }]);
+        if (data.edited && onPageEdited) {
+          onPageEdited();
+        }
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: '⏹️ Request cancelled.' }]);
+      } else {
+        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: `⚠️ ${err.message}` }]);
       }
     }
     abortControllerRef.current = null;
@@ -130,16 +200,32 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
       {/* Header */}
       <Flex align="center" justify="space-between" px={4} py={3} borderBottom="1px solid" borderColor={borderColor}>
         <Heading size="xs" fontWeight="600">🤖 Copilot Chat</Heading>
-        {messages.length > 0 && (
-          <IconButton
-            icon={<FiTrash2 />}
-            aria-label="Clear chat"
+        <Flex align="center" gap={1}>
+          <Select
             size="xs"
-            variant="ghost"
-            colorScheme="red"
-            onClick={() => setMessages([])}
-          />
-        )}
+            w="130px"
+            value={model}
+            onChange={(e) => {
+              setModel(e.target.value);
+              localStorage.setItem('chat:model', e.target.value);
+            }}
+            borderRadius="md"
+          >
+            {AVAILABLE_MODELS.map(m => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </Select>
+          {messages.length > 0 && (
+            <IconButton
+              icon={<FiTrash2 />}
+              aria-label="Clear chat"
+              size="xs"
+              variant="ghost"
+              colorScheme="red"
+              onClick={() => setMessages([])}
+            />
+          )}
+        </Flex>
       </Flex>
 
       {/* Messages */}
@@ -167,7 +253,7 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
               {[
                 'Find me the article about code review process',
                 'Summarize what this page is about',
-                'How do I set up a new project from scratch?',
+                'Fix the typo in the first paragraph',
               ].map((example, idx) => (
                 <Box
                   key={idx}
@@ -189,25 +275,36 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }
           </Box>
         )}
         {messages.map((m, i) => (
-          <Box
-            key={i}
-            alignSelf={m.role === 'user' ? 'flex-end' : 'flex-start'}
-            maxW="90%"
-            bg={m.role === 'user' ? userBubble : botBubble}
-            px={4}
-            py={3}
-            borderRadius="xl"
-            borderBottomRightRadius={m.role === 'user' ? 'sm' : 'xl'}
-            borderBottomLeftRadius={m.role === 'assistant' ? 'sm' : 'xl'}
-            fontSize="14px"
-            lineHeight="1.6"
-            dangerouslySetInnerHTML={{ __html: renderContent(m.content) }}
-            sx={{
-              'pre': { bg: 'gray.800', color: 'gray.100', p: 3, borderRadius: 'md', my: 2, overflowX: 'auto', fontSize: '12px' },
-              'code': { fontSize: '0.85em' },
-              '.chat-wiki-link': { color: 'brand.400', cursor: 'pointer', textDecoration: 'underline', _hover: { color: 'brand.300' } },
-            }}
-          />
+          <Box key={i} alignSelf={m.role === 'user' ? 'flex-end' : 'flex-start'} maxW="90%">
+            <Box
+              bg={m.role === 'user' ? userBubble : botBubble}
+              px={4}
+              py={3}
+              borderRadius="xl"
+              borderBottomRightRadius={m.role === 'user' ? 'sm' : 'xl'}
+              borderBottomLeftRadius={m.role === 'assistant' ? 'sm' : 'xl'}
+              fontSize="14px"
+              lineHeight="1.6"
+              dangerouslySetInnerHTML={{ __html: renderContent(m.content) }}
+              sx={{
+                'pre': { bg: 'gray.800', color: 'gray.100', p: 3, borderRadius: 'md', my: 2, overflowX: 'auto', fontSize: '12px' },
+                'code': { fontSize: '0.85em' },
+                '.chat-wiki-link': { color: 'brand.400', cursor: 'pointer', textDecoration: 'underline', _hover: { color: 'brand.300' } },
+              }}
+            />
+            {m.role === 'user' && i === messages.length - 2 && messages[messages.length - 1]?.role === 'assistant' && !loading && (
+              <IconButton
+                icon={<FiRefreshCw />}
+                aria-label="Retry"
+                size="xs"
+                variant="ghost"
+                colorScheme="gray"
+                mt={1}
+                alignSelf="flex-end"
+                onClick={resend}
+              />
+            )}
+          </Box>
         ))}
         {loading && (
           <Box alignSelf="flex-start" maxW="90%" bg={botBubble} px={4} py={3} borderRadius="xl" borderBottomLeftRadius="sm">
