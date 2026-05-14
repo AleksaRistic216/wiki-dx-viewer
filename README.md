@@ -54,6 +54,42 @@ The chat sidebar (labeled "Copilot Chat" in the UI) uses the **GitHub Models API
 
 This means the AI knows exactly what you're reading and can help navigate, explain, or answer questions.
 
+## Desktop App (Tauri)
+
+The app can be packaged as a native desktop application using Tauri v2. Users get a standalone installer — no need to install Node.js or run npm commands.
+
+### End-User Prerequisites
+
+- **Git** — for cloning/updating the wiki repository
+- **GitHub CLI** (`gh`) — authenticated via `gh auth login`
+
+### Building the Desktop App
+
+**Developer prerequisites**: Node.js, Rust toolchain, `cargo-tauri` CLI.
+
+```bash
+# Install tauri-cli (one time)
+cargo install tauri-cli --version "^2"
+
+# Build the installer
+# On Windows:
+.\build.ps1
+
+# On macOS/Linux:
+./build.sh
+```
+
+The installer will be in `src-tauri/target/release/bundle/`.
+
+**Output formats:**
+- Windows: `.msi` and `.exe` (NSIS) installer
+- macOS: `.dmg` and `.app` bundle
+- Linux: `.deb` and `.AppImage`
+
+### CI Builds (GitHub Actions)
+
+For automated cross-platform builds, add a workflow using `tauri-apps/tauri-action@v0`. See the [Tauri GitHub Action docs](https://v2.tauri.app/distribute/github-actions/).
+
 ## Data Storage
 
 All data is stored in `~/.wiki-dx-viewer/`:

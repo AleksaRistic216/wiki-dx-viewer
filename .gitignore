@@ -1,3 +1,11 @@
 src/node_modules/
 src/package-lock.json
 src/.next/
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/resources/
+src-tauri/gen/
+src-tauri/icons/*.png
+src-tauri/icons/*.ico
+src-tauri/icons/*.icns
