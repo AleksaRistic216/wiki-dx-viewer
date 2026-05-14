@@ -193,6 +193,7 @@ export default function HomePage() {
             wiki={currentWiki}
             currentPage={currentPagePath}
             pageContent={currentPageMarkdown}
+            onNavigate={loadPage}
           />
         )}
       </Flex>

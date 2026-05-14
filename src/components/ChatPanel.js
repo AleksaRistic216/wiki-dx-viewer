@@ -13,7 +13,7 @@ import {
 } from '@chakra-ui/react';
 import { FiSend } from 'react-icons/fi';
 
-export default function ChatPanel({ wiki, currentPage, pageContent }) {
+export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -67,6 +67,7 @@ export default function ChatPanel({ wiki, currentPage, pageContent }) {
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/\[([^\]]+)\]\(([^)]+\.md)\)/g, '<a href="#" class="chat-wiki-link" data-page="$2">$1</a>')
       .replace(/\n/g, '<br>');
   }
 
@@ -86,7 +87,21 @@ export default function ChatPanel({ wiki, currentPage, pageContent }) {
       </Flex>
 
       {/* Messages */}
-      <VStack flex={1} overflow="auto" p={4} spacing={3} align="stretch">
+      <VStack
+        flex={1}
+        overflow="auto"
+        p={4}
+        spacing={3}
+        align="stretch"
+        onClick={(e) => {
+          const link = e.target.closest('.chat-wiki-link');
+          if (link) {
+            e.preventDefault();
+            const page = link.dataset.page;
+            if (page && onNavigate) onNavigate(page);
+          }
+        }}
+      >
         {messages.length === 0 && (
           <Box textAlign="center" py={8}>
             <Text fontSize="sm" color="gray.500">
@@ -111,6 +126,7 @@ export default function ChatPanel({ wiki, currentPage, pageContent }) {
             sx={{
               'pre': { bg: 'gray.800', color: 'gray.100', p: 3, borderRadius: 'md', my: 2, overflowX: 'auto', fontSize: '12px' },
               'code': { fontSize: '0.85em' },
+              '.chat-wiki-link': { color: 'brand.400', cursor: 'pointer', textDecoration: 'underline', _hover: { color: 'brand.300' } },
             }}
           />
         ))}
