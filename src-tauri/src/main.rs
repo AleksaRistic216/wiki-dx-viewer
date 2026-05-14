@@ -9,6 +9,27 @@ use tauri::Manager;
 
 struct ServerProcess(Mutex<Option<Child>>);
 
+#[cfg(target_os = "windows")]
+fn show_error(msg: &str) {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn MessageBoxW(hwnd: *mut std::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
+    }
+
+    let text: Vec<u16> = OsStr::new(msg).encode_wide().chain(once(0)).collect();
+    let caption: Vec<u16> = OsStr::new("Wiki DX Viewer - Error").encode_wide().chain(once(0)).collect();
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10); }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_error(msg: &str) {
+    // On non-Windows, just print to stderr (console is visible on macOS/Linux)
+    eprintln!("Wiki DX Viewer Error: {}", msg);
+}
+
 fn get_node_path(resource_dir: &PathBuf) -> PathBuf {
     if cfg!(target_os = "windows") {
         resource_dir.join("resources").join("node").join("node.exe")
@@ -21,9 +42,16 @@ fn get_server_path(resource_dir: &PathBuf) -> PathBuf {
     resource_dir.join("resources").join("server").join("server.js")
 }
 
-fn start_server(resource_dir: &PathBuf) -> Child {
+fn start_server(resource_dir: &PathBuf) -> Result<Child, String> {
     let node_path = get_node_path(resource_dir);
     let server_path = get_server_path(resource_dir);
+
+    if !node_path.exists() {
+        return Err(format!("Node.js binary not found at: {}", node_path.display()));
+    }
+    if !server_path.exists() {
+        return Err(format!("Server script not found at: {}", server_path.display()));
+    }
 
     let mut child = Command::new(&node_path)
         .arg(&server_path)
@@ -32,7 +60,7 @@ fn start_server(resource_dir: &PathBuf) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to start Node.js server");
+        .map_err(|e| format!("Failed to start Node.js server: {}", e))?;
 
     // Wait for server to be ready by watching stdout
     if let Some(stdout) = child.stdout.take() {
@@ -53,7 +81,7 @@ fn start_server(resource_dir: &PathBuf) -> Child {
 
     // Give it a moment to fully initialize
     std::thread::sleep(Duration::from_millis(500));
-    child
+    Ok(child)
 }
 
 fn main() {
@@ -69,8 +97,16 @@ fn main() {
                     .resource_dir()
                     .expect("failed to resolve resource dir");
 
-                let child = start_server(&resource_dir);
-                app.manage(ServerProcess(Mutex::new(Some(child))));
+                match start_server(&resource_dir) {
+                    Ok(child) => {
+                        app.manage(ServerProcess(Mutex::new(Some(child))));
+                    }
+                    Err(e) => {
+                        eprintln!("Server startup error: {}", e);
+                        show_error(&e);
+                        std::process::exit(1);
+                    }
+                }
             }
             Ok(())
         })
