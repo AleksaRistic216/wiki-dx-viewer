@@ -68,7 +68,7 @@ fn spawn_server(resource_dir: &PathBuf) -> Result<Child, String> {
     cmd.arg(&server_path)
         .current_dir(&server_dir)
         .env("PORT", "4000")
-        .env("HOSTNAME", "localhost")
+        .env("HOSTNAME", "127.0.0.1")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
