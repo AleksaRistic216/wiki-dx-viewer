@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Box, Heading, Text, useColorModeValue } from '@chakra-ui/react';
+import { Box, Heading, Text, Textarea, Button, HStack, IconButton, Tooltip, useColorModeValue } from '@chakra-ui/react';
+import { FiEdit2 } from 'react-icons/fi';
 
-export default function ContentArea({ page }) {
+export default function ContentArea({ page, editing, editContent, onEditContentChange, onSave, onCancelEdit, editSaving, editSession, onStartEdit, hasPage }) {
   useEffect(() => {
     if (!page?.html) return;
     const container = document.querySelector('.wiki-content');
@@ -24,10 +25,27 @@ export default function ContentArea({ page }) {
     container.addEventListener('click', handleTabClick);
     return () => container.removeEventListener('click', handleTabClick);
   }, [page?.html]);
+
+  // All color mode values must be called unconditionally (Rules of Hooks)
   const bg = useColorModeValue('gray.50', 'gray.900');
   const contentBg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
-  const subtleBg = useColorModeValue('gray.50', 'gray.750');
+  const textColor = useColorModeValue('gray.700', 'gray.300');
+  const markerColor = useColorModeValue('gray.400', 'gray.500');
+  const preBg = useColorModeValue('gray.900', 'gray.950');
+  const preBorderColor = useColorModeValue('gray.200', 'gray.600');
+  const codeBg = useColorModeValue('gray.100', 'gray.700');
+  const codeColor = useColorModeValue('brand.700', 'brand.200');
+  const thBg = useColorModeValue('gray.50', 'gray.700');
+  const thColor = useColorModeValue('gray.600', 'gray.300');
+  const hoverBg = useColorModeValue('gray.25', 'gray.750');
+  const bqColor = useColorModeValue('gray.600', 'gray.400');
+  const bqBg = useColorModeValue('brand.50', 'whiteAlpha.50');
+  const tabsNavBg = useColorModeValue('gray.100', 'gray.700');
+  const tabBtnColor = useColorModeValue('gray.600', 'gray.400');
+  const tabBtnHoverColor = useColorModeValue('gray.800', 'gray.200');
+  const tabBtnHoverBg = useColorModeValue('gray.200', 'gray.600');
+  const tabBtnActiveBg = useColorModeValue('white', 'gray.800');
 
   if (!page) {
     return (
@@ -60,8 +78,47 @@ export default function ContentArea({ page }) {
     );
   }
 
+  if (editing) {
+    return (
+      <Box flex={1} overflow="auto" bg={bg} p={{ base: 4, md: 8 }}>
+        <Box maxW="860px" mx="auto">
+          <HStack mb={4} justify="flex-end">
+            <Button size="sm" variant="ghost" onClick={onCancelEdit}>Cancel</Button>
+            <Button size="sm" colorScheme="brand" onClick={onSave} isLoading={editSaving}>Save</Button>
+          </HStack>
+          <Textarea
+            value={editContent}
+            onChange={e => onEditContentChange(e.target.value)}
+            fontFamily="mono"
+            fontSize="14px"
+            minH="calc(100vh - 200px)"
+            bg={contentBg}
+            borderRadius="xl"
+            border="1px solid"
+            borderColor={borderColor}
+            p={6}
+            resize="vertical"
+          />
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box flex={1} overflow="auto" bg={bg} p={{ base: 4, md: 8 }}>
+      {hasPage && (
+        <Box maxW="860px" mx="auto" mb={2} textAlign="right">
+          <Tooltip label={editSession ? 'Edit this page' : 'Start editing session & edit this page'}>
+            <IconButton
+              icon={<FiEdit2 />}
+              aria-label="Edit page"
+              size="sm"
+              variant="ghost"
+              onClick={onStartEdit}
+            />
+          </Tooltip>
+        </Box>
+      )}
       <Box
         maxW="860px"
         mx="auto"
@@ -105,23 +162,23 @@ export default function ContentArea({ page }) {
             fontWeight: '600',
             mt: 6,
             mb: 2,
-            color: useColorModeValue('gray.700', 'gray.300'),
+            color: textColor,
           },
           'p': {
             my: 4,
             lineHeight: 1.8,
-            color: useColorModeValue('gray.700', 'gray.300'),
+            color: textColor,
           },
           'ul, ol': {
             my: 4,
             pl: 6,
             lineHeight: 1.8,
-            color: useColorModeValue('gray.700', 'gray.300'),
+            color: textColor,
           },
           'li': { my: 1.5 },
-          'li::marker': { color: useColorModeValue('gray.400', 'gray.500') },
+          'li::marker': { color: markerColor },
           'pre': {
-            bg: useColorModeValue('gray.900', 'gray.950'),
+            bg: preBg,
             color: 'gray.100',
             borderRadius: '0',
             px: { base: 5, md: 10 },
@@ -133,12 +190,12 @@ export default function ContentArea({ page }) {
             lineHeight: 1.7,
             borderTop: '1px solid',
             borderBottom: '1px solid',
-            borderColor: useColorModeValue('gray.200', 'gray.600'),
+            borderColor: preBorderColor,
           },
           'code': { fontFamily: 'mono', fontSize: '0.87em' },
           ':not(pre) > code': {
-            bg: useColorModeValue('gray.100', 'gray.700'),
-            color: useColorModeValue('brand.700', 'brand.200'),
+            bg: codeBg,
+            color: codeColor,
             px: 1.5,
             py: 0.5,
             borderRadius: 'md',
@@ -170,23 +227,23 @@ export default function ContentArea({ page }) {
             textAlign: 'left',
           },
           'th': {
-            bg: useColorModeValue('gray.50', 'gray.700'),
+            bg: thBg,
             fontWeight: '600',
             fontSize: '12px',
             textTransform: 'uppercase',
             letterSpacing: '0.05em',
-            color: useColorModeValue('gray.600', 'gray.300'),
+            color: thColor,
           },
           'tr:last-child td': { borderBottom: 'none' },
-          'tr:hover td': { bg: useColorModeValue('gray.25', 'gray.750') },
+          'tr:hover td': { bg: hoverBg },
           'blockquote': {
             borderLeft: '3px solid',
             borderColor: 'brand.400',
             pl: 5,
             py: 3,
             my: 6,
-            color: useColorModeValue('gray.600', 'gray.400'),
-            bg: useColorModeValue('brand.50', 'whiteAlpha.50'),
+            color: bqColor,
+            bg: bqBg,
             borderRadius: '0 12px 12px 0',
             fontStyle: 'italic',
           },
@@ -203,7 +260,7 @@ export default function ContentArea({ page }) {
             borderTop: '1px solid',
             borderColor: borderColor,
           },
-          '& > *:first-child': { mt: 0 },
+          '& > *:first-of-type': { mt: 0 },
           '& > *:last-child': { mb: 0 },
           '.wiki-tabs': {
             my: 6,
@@ -215,7 +272,7 @@ export default function ContentArea({ page }) {
           '.wiki-tabs-nav': {
             display: 'flex',
             gap: 0,
-            bg: useColorModeValue('gray.100', 'gray.700'),
+            bg: tabsNavBg,
             borderBottom: '1px solid',
             borderColor: borderColor,
           },
@@ -227,18 +284,18 @@ export default function ContentArea({ page }) {
             cursor: 'pointer',
             border: 'none',
             bg: 'transparent',
-            color: useColorModeValue('gray.600', 'gray.400'),
+            color: tabBtnColor,
             borderBottom: '2px solid transparent',
             transition: 'all 0.15s',
             _hover: {
-              color: useColorModeValue('gray.800', 'gray.200'),
-              bg: useColorModeValue('gray.200', 'gray.600'),
+              color: tabBtnHoverColor,
+              bg: tabBtnHoverBg,
             },
           },
           '.wiki-tab-btn.active': {
             color: 'brand.500',
             borderBottomColor: 'brand.500',
-            bg: useColorModeValue('white', 'gray.800'),
+            bg: tabBtnActiveBg,
           },
           '.wiki-tab-panel': {
             display: 'none',

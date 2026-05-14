@@ -249,50 +249,112 @@ function searchWiki(wikiId, query) {
   return results;
 }
 
-function searchWikiForChat(wikiId, query, excludePage) {
+function extractHeaders(markdown) {
+  return markdown.split('\n')
+    .filter(line => /^#{1,4}\s/.test(line))
+    .map(line => line.replace(/^#+\s*/, '').trim());
+}
+
+function extractPageTitle(content) {
+  const firstLine = content.split('\n').find(l => l.trim());
+  if (!firstLine) return '';
+  return firstLine.replace(/^#+\s*/, '').trim();
+}
+
+function getWikiPageList(wikiId, excludePage) {
   const docsRoot = getDocsRoot();
   const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
   if (!fs.existsSync(ymlPath)) return [];
 
   const yml = loadYaml(ymlPath);
   const docsDir = path.join(docsRoot, wikiId, yml.docs_dir || 'docs');
-  const results = [];
+  const pages = [];
 
-  // Extract keywords (words with 3+ chars, skip common stop words)
+  function collectPages(dir, prefix = '') {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        collectPages(path.join(dir, entry.name), prefix + entry.name + '/');
+      } else if (entry.name.endsWith('.md')) {
+        const pagePath = prefix + entry.name;
+        if (pagePath === excludePage) continue;
+        const filePath = path.join(dir, entry.name);
+        const content = fs.readFileSync(filePath, 'utf8');
+        const title = extractPageTitle(content);
+        pages.push({ path: pagePath, title, content });
+      }
+    }
+  }
+
+  collectPages(docsDir);
+  return pages;
+}
+
+function buildTieredContext(wikiId, query, excludePage) {
   const stopWords = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'how', 'what', 'when', 'where', 'which', 'who', 'will', 'with', 'this', 'that', 'from', 'they', 'would', 'there', 'their', 'about', 'could', 'does', 'should']);
   const keywords = query.toLowerCase()
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3 && !stopWords.has(w));
 
-  if (keywords.length === 0) return [];
+  if (keywords.length === 0) return '';
 
-  function scoreFile(dir, prefix = '') {
-    if (!fs.existsSync(dir)) return;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        scoreFile(path.join(dir, entry.name), prefix + entry.name + '/');
-      } else if (entry.name.endsWith('.md')) {
-        const pagePath = prefix + entry.name;
-        if (pagePath === excludePage) continue;
-        const content = fs.readFileSync(path.join(dir, entry.name), 'utf8');
-        const lower = content.toLowerCase();
-        let score = 0;
-        for (const kw of keywords) {
-          const idx = lower.indexOf(kw);
-          if (idx !== -1) score++;
-        }
-        if (score > 0) {
-          results.push({ path: pagePath, content, score });
-        }
-      }
+  const pages = getWikiPageList(wikiId, excludePage);
+  if (pages.length === 0) return '';
+
+  // Score pages by keyword matches in title and content
+  const scored = pages.map(page => {
+    const lowerTitle = page.title.toLowerCase();
+    const lowerContent = page.content.toLowerCase();
+    let titleScore = 0;
+    let contentScore = 0;
+    for (const kw of keywords) {
+      if (lowerTitle.includes(kw)) titleScore++;
+      if (lowerContent.includes(kw)) contentScore++;
+    }
+    return { ...page, titleScore, contentScore, totalScore: titleScore * 3 + contentScore };
+  }).filter(p => p.totalScore > 0);
+
+  scored.sort((a, b) => b.totalScore - a.totalScore);
+
+  if (scored.length === 0) return '';
+
+  let context = '\n\n--- RELEVANT WIKI CONTEXT ---\n';
+  let budget = 3000; // character budget for additional context
+
+  // Tier 1: Page titles of all matched pages (very cheap)
+  const titleMatched = scored.slice(0, 15);
+  context += `\nRelevant pages found:\n`;
+  for (const page of titleMatched) {
+    const line = `- ${page.path}: "${page.title}"\n`;
+    context += line;
+    budget -= line.length;
+  }
+
+  // Tier 2: Headers of top-scoring pages
+  const topPages = scored.slice(0, 5);
+  context += `\nHeaders from most relevant pages:\n`;
+  for (const page of topPages) {
+    const headers = extractHeaders(page.content);
+    if (headers.length > 0) {
+      const headerBlock = `\n## ${page.path}\n${headers.map(h => `- ${h}`).join('\n')}\n`;
+      if (headerBlock.length > budget) break;
+      context += headerBlock;
+      budget -= headerBlock.length;
     }
   }
 
-  scoreFile(docsDir);
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, 5);
+  // Tier 3: Content snippet from the single best match
+  if (budget > 200 && scored.length > 0) {
+    const best = scored[0];
+    const snippet = best.content.length > budget
+      ? best.content.slice(0, budget) + '\n[...truncated...]'
+      : best.content;
+    context += `\n\nFull content of best match (${best.path}):\n${snippet}`;
+  }
+
+  return context;
 }
 
 async function chat(messages, wiki, currentPage, pageContent) {
@@ -307,7 +369,9 @@ async function chat(messages, wiki, currentPage, pageContent) {
       const yml = loadYaml(ymlPath);
       systemMessage += `\n\nThe user is currently viewing the "${yml.site_name}" wiki.`;
       if (yml.nav) {
-        systemMessage += `\n\nWiki navigation structure:\n${yaml.dump(yml.nav)}`;
+        const navDump = yaml.dump(yml.nav);
+        const navTrimmed = navDump.length > 1500 ? navDump.slice(0, 1500) + '\n...[truncated]' : navDump;
+        systemMessage += `\n\nWiki navigation structure:\n${navTrimmed}`;
       }
     }
   }
@@ -317,27 +381,15 @@ async function chat(messages, wiki, currentPage, pageContent) {
   }
 
   if (pageContent) {
-    const trimmed = pageContent.length > 6000 ? pageContent.slice(0, 6000) + '\n\n[...content truncated...]' : pageContent;
+    const trimmed = pageContent.length > 2000 ? pageContent.slice(0, 2000) + '\n\n[...content truncated...]' : pageContent;
     systemMessage += `\n\nPage content (markdown):\n${trimmed}`;
   }
 
-  // Search for relevant pages from the whole wiki based on the user's latest question
+  // Build tiered context from relevant wiki pages
   if (wiki && messages.length > 0) {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
     if (lastUserMsg) {
-      const relevantPages = searchWikiForChat(wiki, lastUserMsg.content, currentPage);
-      if (relevantPages.length > 0) {
-        systemMessage += `\n\n--- RELEVANT WIKI PAGES ---\nBelow are other pages from this wiki that may be relevant to the user's question:\n`;
-        let budgetRemaining = 12000;
-        for (const page of relevantPages) {
-          const content = page.content.length > budgetRemaining
-            ? page.content.slice(0, budgetRemaining) + '\n[...truncated...]'
-            : page.content;
-          budgetRemaining -= content.length;
-          systemMessage += `\n## Page: ${page.path}\n${content}\n`;
-          if (budgetRemaining <= 0) break;
-        }
-      }
+      systemMessage += buildTieredContext(wiki, lastUserMsg.content, currentPage);
     }
   }
 

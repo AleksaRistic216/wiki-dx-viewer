@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   Text,
@@ -10,6 +10,20 @@ import {
   VStack,
 } from '@chakra-ui/react';
 import { FiChevronDown, FiChevronRight, FiFileText } from 'react-icons/fi';
+
+function containsPage(nav, page) {
+  if (!nav || !Array.isArray(nav) || !page) return false;
+  for (const item of nav) {
+    if (typeof item === 'string' && item === page) return true;
+    if (typeof item === 'object') {
+      for (const value of Object.values(item)) {
+        if (typeof value === 'string' && value === page) return true;
+        if (Array.isArray(value) && containsPage(value, page)) return true;
+      }
+    }
+  }
+  return false;
+}
 
 function NavItem({ title, pagePath, onSelect, isActive }) {
   const hoverBg = useColorModeValue('gray.100', 'gray.700');
@@ -42,7 +56,12 @@ function NavItem({ title, pagePath, onSelect, isActive }) {
 }
 
 function NavFolder({ title, children, onSelect, currentPage, defaultOpen = false }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const hasActivePage = containsPage(children, currentPage);
+  const [isOpen, setIsOpen] = useState(defaultOpen || hasActivePage);
+
+  useEffect(() => {
+    if (hasActivePage) setIsOpen(true);
+  }, [hasActivePage]);
   const hoverBg = useColorModeValue('gray.100', 'gray.700');
   const folderColor = useColorModeValue('gray.600', 'gray.400');
 
@@ -118,7 +137,7 @@ function NavTree({ nav, onSelect, currentPage, depth = 0 }) {
                   children={value}
                   onSelect={onSelect}
                   currentPage={currentPage}
-                  defaultOpen={depth === 0}
+                  defaultOpen={false}
                 />
               );
             }
