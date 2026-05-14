@@ -45,6 +45,74 @@ fn get_server_dir(resource_dir: &PathBuf) -> PathBuf {
     resource_dir.join("resources").join("server")
 }
 
+/// Kill any existing node process holding port 4000 (leftover from previous instance)
+fn kill_stale_server() {
+    if TcpStream::connect("127.0.0.1:4000").is_err() {
+        return; // Port is free
+    }
+
+    if cfg!(target_os = "windows") {
+        let output = Command::new("cmd")
+            .args(["/C", "netstat -ano | findstr :4000 | findstr LISTEN"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000)
+            .output();
+
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if let Some(pid_str) = line.split_whitespace().last() {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        let check = Command::new("cmd")
+                            .args(["/C", &format!("tasklist /FI \"PID eq {}\" /NH", pid)])
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .creation_flags(0x08000000)
+                            .output();
+
+                        if let Ok(check_out) = check {
+                            let proc_info = String::from_utf8_lossy(&check_out.stdout);
+                            if proc_info.contains("node") {
+                                let _ = Command::new("cmd")
+                                    .args(["/C", &format!("taskkill /F /PID {}", pid)])
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .creation_flags(0x08000000)
+                                    .output();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        let output = Command::new("lsof")
+            .args(["-ti", ":4000"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for pid_str in text.lines() {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    let _ = Command::new("kill").arg(pid.to_string()).output();
+                }
+            }
+        }
+    }
+
+    // Wait for port to free up
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if TcpStream::connect("127.0.0.1:4000").is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn spawn_server(resource_dir: &PathBuf) -> Result<Child, String> {
     let node_path = get_node_path(resource_dir);
     let server_dir = get_server_dir(resource_dir);
@@ -92,6 +160,9 @@ fn main() {
                 .path()
                 .resource_dir()
                 .expect("failed to resolve resource dir");
+
+            // Kill any stale node server from a previous instance
+            kill_stale_server();
 
             let child = match spawn_server(&resource_dir) {
                 Ok(c) => c,
