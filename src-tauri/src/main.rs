@@ -51,7 +51,8 @@ fn kill_stale_server() {
         return; // Port is free
     }
 
-    if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")]
+    {
         let output = Command::new("cmd")
             .args(["/C", "netstat -ano | findstr :4000 | findstr LISTEN"])
             .stdout(Stdio::piped())
@@ -86,7 +87,10 @@ fn kill_stale_server() {
                 }
             }
         }
-    } else {
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         let output = Command::new("lsof")
             .args(["-ti", ":4000"])
             .stdout(Stdio::piped())
