@@ -60,13 +60,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let resource_dir = app
-                .path()
-                .resource_dir()
-                .expect("failed to resolve resource dir");
+            // In dev mode, Next.js dev server is already running on port 4000
+            if cfg!(debug_assertions) {
+                app.manage(ServerProcess(Mutex::new(None)));
+            } else {
+                let resource_dir = app
+                    .path()
+                    .resource_dir()
+                    .expect("failed to resolve resource dir");
 
-            let child = start_server(&resource_dir);
-            app.manage(ServerProcess(Mutex::new(Some(child))));
+                let child = start_server(&resource_dir);
+                app.manage(ServerProcess(Mutex::new(Some(child))));
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
