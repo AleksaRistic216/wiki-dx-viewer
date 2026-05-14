@@ -147,10 +147,10 @@ jobs:
       - name: Copy standalone server to resources
         shell: bash
         run: |
-          cp -r src/.next/standalone/* src-tauri/resources/server/
+          cp -r src/.next/standalone/. src-tauri/resources/server/
           if [ -d "src/.next/static" ]; then
             mkdir -p src-tauri/resources/server/.next/static
-            cp -r src/.next/static/* src-tauri/resources/server/.next/static/
+            cp -r src/.next/static/. src-tauri/resources/server/.next/static/
           fi
           if [ -d "src/public" ]; then
             mkdir -p src-tauri/resources/server/public
