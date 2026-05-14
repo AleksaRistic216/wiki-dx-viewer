@@ -98,6 +98,9 @@ jobs:
         shell: bash
         run: |
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.cargo/bin:$PATH"
+          which cargo
+          cargo --version
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -198,6 +201,7 @@ jobs:
         env:
           TAURI_CONFIG: '{"bundle":{"resources":["resources/**/*"]}}'
         run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
           cd src-tauri
           npx tauri build
 
