@@ -16,10 +16,13 @@ const marked = new Marked();
 marked.use(gfmHeadingId());
 marked.use({
   renderer: {
-    code({ text, lang }) {
-      if (lang && hljs.getLanguage(lang)) {
-        const highlighted = hljs.highlight(text, { language: lang }).value;
-        return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+    code(code, lang) {
+      const text = typeof code === 'object' ? code.text : code;
+      const language = typeof code === 'object' ? code.lang : lang;
+      if (!text) return `<pre><code class="hljs"></code></pre>`;
+      if (language && hljs.getLanguage(language)) {
+        const highlighted = hljs.highlight(text, { language }).value;
+        return `<pre><code class="hljs language-${language}">${highlighted}</code></pre>`;
       }
       return `<pre><code class="hljs">${hljs.highlightAuto(text).value}</code></pre>`;
     }
