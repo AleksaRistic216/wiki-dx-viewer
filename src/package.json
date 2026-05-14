@@ -1,6 +1,6 @@
 {
   "name": "wiki-dx-viewer",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "description": "Local wiki viewer with AI chat for DevExpress wiki-dx repository",
   "scripts": {

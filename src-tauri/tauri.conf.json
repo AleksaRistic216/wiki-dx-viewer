@@ -1,6 +1,6 @@
 {
   "productName": "Wiki DX Viewer",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "identifier": "com.devexpress.wiki-dx-viewer",
   "build": {
     "frontendDist": "http://127.0.0.1:4000",
