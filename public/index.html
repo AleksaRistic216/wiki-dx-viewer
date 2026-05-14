@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wiki Viewer</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Bar -->
+    <header id="topbar">
+      <div class="topbar-left">
+        <button id="nav-toggle" class="icon-btn" title="Toggle navigation">☰</button>
+        <select id="wiki-select"></select>
+      </div>
+      <div class="topbar-center">
+        <input type="search" id="search-input" placeholder="Search wiki..." autocomplete="off">
+        <div id="search-results" class="dropdown hidden"></div>
+      </div>
+      <div class="topbar-right">
+        <button id="chat-toggle" class="icon-btn" title="Toggle AI chat">💬</button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <div id="main">
+      <!-- Left Sidebar: Navigation -->
+      <aside id="nav-panel" class="panel">
+        <nav id="nav-tree"></nav>
+      </aside>
+
+      <!-- Content -->
+      <main id="content">
+        <article id="page-content">
+          <div class="welcome">
+            <h1>📚 Wiki Viewer</h1>
+            <p>Select a wiki from the dropdown above to get started.</p>
+          </div>
+        </article>
+      </main>
+
+      <!-- Right Sidebar: AI Chat -->
+      <aside id="chat-panel" class="panel">
+        <div id="chat-header">
+          <h3>🤖 Copilot Chat</h3>
+        </div>
+        <div id="chat-messages"></div>
+        <div id="chat-input-area">
+          <textarea id="chat-input" placeholder="Ask about this wiki..." rows="2"></textarea>
+          <button id="chat-send">Send</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

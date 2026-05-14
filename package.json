@@ -1,0 +1,19 @@
+{
+  "name": "wiki-dx-viewer",
+  "version": "1.0.0",
+  "description": "Local wiki viewer with AI chat for DevExpress wiki-dx repository",
+  "main": "server.js",
+  "bin": {
+    "wiki-dx": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "js-yaml": "^4.1.0",
+    "marked": "^12.0.0",
+    "marked-gfm-heading-id": "^3.1.0",
+    "highlight.js": "^11.9.0"
+  }
+}
