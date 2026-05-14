@@ -13,9 +13,9 @@ A local web app that serves DevExpress wiki content with an integrated AI chat s
 ## Quick Start
 
 ```bash
-cd wiki-dx-viewer
+cd wiki-dx-viewer/src
 npm install
-npm start
+npm run dev
 ```
 
 On **first run**, the app automatically clones the [wiki-dx](https://github.com/DevExpress/wiki-dx) repository to `~/.wiki-dx-viewer/wiki-dx/`. On subsequent starts, it pulls the latest changes.
