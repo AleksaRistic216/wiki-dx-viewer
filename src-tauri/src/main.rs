@@ -69,8 +69,8 @@ fn spawn_server(resource_dir: &PathBuf) -> Result<Child, String> {
         .current_dir(&server_dir)
         .env("PORT", "4000")
         .env("HOSTNAME", "localhost")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
