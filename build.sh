@@ -91,8 +91,8 @@ build_nextjs() {
     rm -rf "$server_dir"
     mkdir -p "$server_dir"
 
-    # Copy the standalone output
-    cp -r "$SRC_DIR/.next/standalone/"* "$server_dir/"
+    # Copy the standalone output (use "." to include dotfiles like .next)
+    cp -r "$SRC_DIR/.next/standalone/." "$server_dir/"
 
     # Copy static assets (needed for Next.js)
     if [ -d "$SRC_DIR/.next/static" ]; then

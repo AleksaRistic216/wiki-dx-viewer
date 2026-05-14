@@ -54,14 +54,15 @@ function Build-NextJS {
 
     Write-Host "==> Copying standalone server to resources"
     $standalonePath = Join-Path $SrcDir ".next\standalone"
-    Copy-Item -Path "$standalonePath\*" -Destination $serverDir -Recurse -Force
+    # Use robocopy for reliable copying including dot-directories
+    robocopy "$standalonePath" "$serverDir" /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
 
-    # Copy static assets
+    # Copy static assets (not included in standalone output)
     $staticPath = Join-Path $SrcDir ".next\static"
     if (Test-Path $staticPath) {
         $destStatic = Join-Path $serverDir ".next\static"
         New-Item -ItemType Directory -Path $destStatic -Force | Out-Null
-        Copy-Item -Path "$staticPath\*" -Destination $destStatic -Recurse -Force
+        robocopy "$staticPath" "$destStatic" /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
     }
 
     # Copy public folder

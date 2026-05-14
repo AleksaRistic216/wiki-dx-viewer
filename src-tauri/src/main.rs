@@ -42,9 +42,14 @@ fn get_server_path(resource_dir: &PathBuf) -> PathBuf {
     resource_dir.join("resources").join("server").join("server.js")
 }
 
+fn get_server_dir(resource_dir: &PathBuf) -> PathBuf {
+    resource_dir.join("resources").join("server")
+}
+
 fn start_server(resource_dir: &PathBuf) -> Result<Child, String> {
     let node_path = get_node_path(resource_dir);
     let server_path = get_server_path(resource_dir);
+    let server_dir = get_server_dir(resource_dir);
 
     if !node_path.exists() {
         return Err(format!("Node.js binary not found at: {}", node_path.display()));
@@ -53,8 +58,17 @@ fn start_server(resource_dir: &PathBuf) -> Result<Child, String> {
         return Err(format!("Server script not found at: {}", server_path.display()));
     }
 
+    let next_dir = server_dir.join(".next");
+    if !next_dir.exists() || !next_dir.join("BUILD_ID").exists() {
+        return Err(format!(
+            "Next.js build not found at: {}\nThe .next directory is missing or incomplete.",
+            next_dir.display()
+        ));
+    }
+
     let mut child = Command::new(&node_path)
         .arg(&server_path)
+        .current_dir(&server_dir)
         .env("PORT", "4000")
         .env("HOSTNAME", "localhost")
         .stdout(Stdio::piped())
