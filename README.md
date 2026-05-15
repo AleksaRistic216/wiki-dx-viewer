@@ -1,20 +1,23 @@
 # Wiki DX Viewer
 
-A desktop app for browsing DevExpress internal wikis with AI-powered chat.
+A web app for browsing DevExpress internal wikis with AI-powered chat.
 
 ## Prerequisites
 
+- **Node.js** (v20+) — [https://nodejs.org](https://nodejs.org)
 - **Git** — [https://git-scm.com](https://git-scm.com)
 - **GitHub CLI** (`gh`) — [https://cli.github.com](https://cli.github.com)
   - Must be authenticated: run `gh auth login` before first launch
 
-## Installation
+## Running
 
-Download the latest installer from [Releases](https://github.com/AleksaRistic216/wiki-dx-viewer/releases):
+```bash
+cd src
+npm install
+npm run dev
+```
 
-- Windows: `.msi` or `.exe` installer
-
-Run the installer and launch **Wiki DX Viewer**.
+Then open [http://localhost:4000](http://localhost:4000).
 
 ## First Launch
 
