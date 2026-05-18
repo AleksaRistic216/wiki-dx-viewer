@@ -61,7 +61,9 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
   // messages from the previous page into the new page's slot)
   useEffect(() => {
     try {
-      localStorage.setItem(storageKeyRef.current, JSON.stringify(messages));
+      // Strip transient status field before persisting
+      const toSave = messages.map(({ status, ...rest }) => rest);
+      localStorage.setItem(storageKeyRef.current, JSON.stringify(toSave));
     } catch {}
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -109,20 +111,127 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
         }),
         signal: controller.signal,
       });
-      const data = await res.json();
-      if (data.error) {
-        setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${data.error}` }]);
-      } else {
-        setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
-        if (data.edited && onPageEdited) {
-          onPageEdited();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamedText = '';
+      let edited = false;
+      let statusText = '';
+
+      // Add a placeholder assistant message that will be updated
+      setMessages(prev => [...prev, { role: 'assistant', content: '', status: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = 'token';
+        for (let li = 0; li < lines.length; li++) {
+          const line = lines[li];
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+            continue;
+          }
+          if (!line.startsWith('data: ')) {
+            if (line.trim() === '') currentEvent = 'token';
+            continue;
+          }
+
+          const eventType = currentEvent;
+          currentEvent = 'token'; // reset after consuming
+
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            if (eventType === 'status') {
+              statusText = data.text;
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, status: statusText };
+                }
+                return updated;
+              });
+            } else if (eventType === 'token') {
+              streamedText += data.token;
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: streamedText, status: '' };
+                }
+                return updated;
+              });
+            } else if (eventType === 'done') {
+              edited = !!data.edited;
+              if (data.reply && data.reply !== '__streamed__') {
+                streamedText = data.reply;
+                setMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: streamedText, status: '' };
+                  }
+                  return updated;
+                });
+              } else {
+                // Clear status on completion
+                setMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, status: '' };
+                  }
+                  return updated;
+                });
+              }
+              if (edited && onPageEdited) {
+                onPageEdited();
+              }
+            } else if (eventType === 'error') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: `⚠️ ${data.error}`, status: '' };
+                }
+                return updated;
+              });
+            }
+          } catch {
+            // skip malformed data
+          }
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        setMessages([...newMessages, { role: 'assistant', content: '⏹️ Request cancelled.' }]);
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, content: '⏹️ Request cancelled.', status: '' };
+          } else {
+            updated.push({ role: 'assistant', content: '⏹️ Request cancelled.' });
+          }
+          return updated;
+        });
       } else {
-        setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${err.message}` }]);
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, content: `⚠️ ${err.message}`, status: '' };
+          } else {
+            updated.push({ role: 'assistant', content: `⚠️ ${err.message}` });
+          }
+          return updated;
+        });
       }
     }
     abortControllerRef.current = null;
@@ -131,7 +240,6 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
 
   async function resend() {
     if (loading) return;
-    // Find the last user message and remove the assistant reply after it
     const lastAssistantIdx = messages.length - 1;
     if (lastAssistantIdx < 1 || messages[lastAssistantIdx].role !== 'assistant') return;
 
@@ -156,20 +264,121 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
         }),
         signal: controller.signal,
       });
-      const data = await res.json();
-      if (data.error) {
-        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: `⚠️ ${data.error}` }]);
-      } else {
-        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: data.reply }]);
-        if (data.edited && onPageEdited) {
-          onPageEdited();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamedText = '';
+      let edited = false;
+
+      setMessages(prev => [...prev, { role: 'assistant', content: '', status: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = 'token';
+        for (let li = 0; li < lines.length; li++) {
+          const line = lines[li];
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+            continue;
+          }
+          if (!line.startsWith('data: ')) {
+            if (line.trim() === '') currentEvent = 'token';
+            continue;
+          }
+
+          const eventType = currentEvent;
+          currentEvent = 'token';
+
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === 'status') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, status: data.text };
+                }
+                return updated;
+              });
+            } else if (eventType === 'token') {
+              streamedText += data.token;
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: streamedText, status: '' };
+                }
+                return updated;
+              });
+            } else if (eventType === 'done') {
+              edited = !!data.edited;
+              if (data.reply && data.reply !== '__streamed__') {
+                setMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: data.reply, status: '' };
+                  }
+                  return updated;
+                });
+              } else {
+                setMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, status: '' };
+                  }
+                  return updated;
+                });
+              }
+              if (edited && onPageEdited) {
+                onPageEdited();
+              }
+            } else if (eventType === 'error') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: `⚠️ ${data.error}`, status: '' };
+                }
+                return updated;
+              });
+            }
+          } catch {
+            // skip malformed data
+          }
         }
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: '⏹️ Request cancelled.' }]);
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, content: '⏹️ Request cancelled.', status: '' };
+          } else {
+            updated.push({ role: 'assistant', content: '⏹️ Request cancelled.' });
+          }
+          return updated;
+        });
       } else {
-        setMessages([...messagesWithoutLastReply, { role: 'assistant', content: `⚠️ ${err.message}` }]);
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, content: `⚠️ ${err.message}`, status: '' };
+          } else {
+            updated.push({ role: 'assistant', content: `⚠️ ${err.message}` });
+          }
+          return updated;
+        });
       }
     }
     abortControllerRef.current = null;
@@ -183,7 +392,15 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/\[([^\]]+)\]\(([^)]+\.md)\)/g, '<a href="#" class="chat-wiki-link" data-page="$2">$1</a>')
+      .replace(/\[([^\]]+)\]\(([^)]+\.md)\)/g, (_, text, href) => {
+        const colonIdx = href.indexOf(':');
+        if (colonIdx > 0 && !href.startsWith('/') && !href.includes('//')) {
+          const wikiId = href.slice(0, colonIdx);
+          const page = href.slice(colonIdx + 1);
+          return `<a href="#" class="chat-wiki-link" data-wiki="${wikiId}" data-page="${page}">${text}</a>`;
+        }
+        return `<a href="#" class="chat-wiki-link" data-page="${href}">${text}</a>`;
+      })
       .replace(/\n/g, '<br>');
   }
 
@@ -240,7 +457,8 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
           if (link) {
             e.preventDefault();
             const page = link.dataset.page;
-            if (page && onNavigate) onNavigate(page);
+            const linkWiki = link.dataset.wiki;
+            if (page && onNavigate) onNavigate(page, linkWiki || null);
           }
         }}
       >
@@ -285,13 +503,24 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
               borderBottomLeftRadius={m.role === 'assistant' ? 'sm' : 'xl'}
               fontSize="14px"
               lineHeight="1.6"
-              dangerouslySetInnerHTML={{ __html: renderContent(m.content) }}
               sx={{
                 'pre': { bg: 'gray.800', color: 'gray.100', p: 3, borderRadius: 'md', my: 2, overflowX: 'auto', fontSize: '12px' },
                 'code': { fontSize: '0.85em' },
                 '.chat-wiki-link': { color: 'brand.400', cursor: 'pointer', textDecoration: 'underline', _hover: { color: 'brand.300' } },
               }}
-            />
+            >
+              {m.content && (
+                <Box dangerouslySetInnerHTML={{ __html: renderContent(m.content) }} />
+              )}
+              {m.status && (
+                <Text fontSize="xs" color="gray.500" fontStyle="italic" mt={m.content ? 2 : 0}>
+                  ⏳ {m.status}
+                </Text>
+              )}
+              {m.role === 'assistant' && !m.content && !m.status && loading && i === messages.length - 1 && (
+                <Text fontSize="sm" color="gray.500" fontStyle="italic">Connecting...</Text>
+              )}
+            </Box>
             {m.role === 'user' && i === messages.length - 2 && messages[messages.length - 1]?.role === 'assistant' && !loading && (
               <IconButton
                 icon={<FiRefreshCw />}
@@ -306,11 +535,6 @@ export default function ChatPanel({ wiki, currentPage, pageContent, onNavigate, 
             )}
           </Box>
         ))}
-        {loading && (
-          <Box alignSelf="flex-start" maxW="90%" bg={botBubble} px={4} py={3} borderRadius="xl" borderBottomLeftRadius="sm">
-            <Text fontSize="sm" color="gray.500" fontStyle="italic">Thinking...</Text>
-          </Box>
-        )}
         <div ref={messagesEndRef} />
       </VStack>
 

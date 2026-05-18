@@ -112,15 +112,21 @@ function completeSession(commitMessage) {
   // Stage all changes
   git('add -A');
 
-  // Check if there are changes to commit
+  // Check if there are uncommitted changes to commit
   const status = git('status --porcelain');
-  if (!status) {
-    throw new Error('No changes to commit');
-  }
-
-  // Commit
   const msg = commitMessage || `Wiki edits from ${session.branch}`;
-  git(`commit -m "${msg.replace(/"/g, '\\"')}"`);
+
+  if (status) {
+    // There are uncommitted changes — commit them
+    git(`commit -m "${msg.replace(/"/g, '\\"')}"`);
+  } else {
+    // No uncommitted changes — check if there are commits ahead of default branch
+    const defaultBranch = getDefaultBranch();
+    const ahead = git(`rev-list --count ${defaultBranch}..HEAD`);
+    if (ahead === '0') {
+      throw new Error('No changes to commit');
+    }
+  }
 
   // Push
   git(`push -u origin ${session.branch}`);
@@ -128,7 +134,7 @@ function completeSession(commitMessage) {
   // Create PR
   const defaultBranch = getDefaultBranch();
   const prOutput = execSync(
-    `gh pr create --base ${defaultBranch} --head ${session.branch} --title "${msg.replace(/"/g, '\\"')}" --body "Editing session started at ${session.startedAt}"`,
+    `gh pr create --base ${defaultBranch} --head ${session.branch} --title "${msg.replace(/"/g, '\\"')}" --body ""`,
     { cwd: getRepoDir(), encoding: 'utf8', stdio: 'pipe' }
   ).trim();
 
@@ -245,8 +251,114 @@ function editNavEntry(wikiId, oldTitle, newTitle) {
   return { saved: true, oldTitle, newTitle };
 }
 
+function createPage(wikiId, pagePath, title, content) {
+  const session = loadSession();
+  if (!session) throw new Error('No active editing session. Start one first.');
+
+  const { getDocsRoot } = require('./wiki');
+  const docsRoot = getDocsRoot();
+  const yaml = require('js-yaml');
+
+  const ymlPath = path.join(docsRoot, wikiId, 'mkdocs.yml');
+  if (!fs.existsSync(ymlPath)) throw new Error(`Wiki "${wikiId}" not found`);
+
+  const ymlContent = fs.readFileSync(ymlPath, 'utf8');
+  const sanitized = ymlContent.replace(/!!python\/name:\S+/g, "'__python_tag__'");
+  const yml = yaml.load(sanitized);
+  const docsDir = path.join(docsRoot, wikiId, yml.docs_dir || 'docs');
+  const filePath = path.join(docsDir, pagePath);
+
+  if (!filePath.startsWith(docsDir)) throw new Error('Invalid path');
+  if (fs.existsSync(filePath)) throw new Error('Page file already exists');
+
+  // Ensure parent directory exists
+  const parentDir = path.dirname(filePath);
+  if (!fs.existsSync(parentDir)) {
+    fs.mkdirSync(parentDir, { recursive: true });
+  }
+
+  // Write the new page file
+  fs.writeFileSync(filePath, content, 'utf8');
+
+  // Add nav entry to mkdocs.yml
+  const updatedYml = addNavEntry(ymlContent, pagePath, title);
+  fs.writeFileSync(ymlPath, updatedYml, 'utf8');
+
+  // Track modified files
+  if (!session.modifiedFiles.includes(`${wikiId}/${pagePath}`)) {
+    session.modifiedFiles.push(`${wikiId}/${pagePath}`);
+  }
+  const trackYml = `${wikiId}/mkdocs.yml`;
+  if (!session.modifiedFiles.includes(trackYml)) {
+    session.modifiedFiles.push(trackYml);
+  }
+  saveSession(session);
+
+  return { created: true, path: pagePath, title };
+}
+
+function addNavEntry(ymlContent, pagePath, title) {
+  // Determine the nav section from the page path (first directory component)
+  const pathParts = pagePath.replace(/\\/g, '/').split('/');
+
+  // Build the new nav entry line
+  const newEntry = `    - "${title}": ${pagePath}`;
+
+  // Strategy: find the nav section matching the first directory of pagePath
+  // and append the entry there. If no matching section, append at end of nav.
+  if (pathParts.length > 1) {
+    const sectionDir = pathParts[0];
+    // Look for a section that contains entries with this directory prefix
+    const sectionPattern = new RegExp(`^(\\s*-\\s*.+:\\s*$[\\s\\S]*?)((?=^\\s*-\\s*[^\\s].*:\\s*$)|$(?!\\n\\s))`, 'gm');
+
+    // Simpler approach: find lines referencing this directory and insert after the last one
+    const lines = ymlContent.split('\n');
+    let lastMatchIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(`${sectionDir}/`)) {
+        lastMatchIdx = i;
+      }
+    }
+
+    if (lastMatchIdx >= 0) {
+      // Detect indentation from the matched line
+      const indent = lines[lastMatchIdx].match(/^(\s*)/)[1];
+      const entryLine = `${indent}- "${title}": ${pagePath}`;
+      lines.splice(lastMatchIdx + 1, 0, entryLine);
+      return lines.join('\n');
+    }
+  }
+
+  // Fallback: append at end of nav section (before any non-nav top-level key or EOF)
+  const lines = ymlContent.split('\n');
+  let lastNavLineIdx = -1;
+  let inNav = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^nav\s*:/.test(lines[i])) {
+      inNav = true;
+      lastNavLineIdx = i;
+      continue;
+    }
+    if (inNav) {
+      if (/^\S/.test(lines[i]) && lines[i].trim() !== '') {
+        // New top-level key, nav section ended
+        break;
+      }
+      lastNavLineIdx = i;
+    }
+  }
+
+  if (lastNavLineIdx >= 0) {
+    lines.splice(lastNavLineIdx + 1, 0, newEntry);
+    return lines.join('\n');
+  }
+
+  // If no nav section found, append a nav section
+  return ymlContent + `\nnav:\n${newEntry}\n`;
+}
+
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-module.exports = { startSession, discardSession, completeSession, getStatus, savePage, editNavEntry, loadSession };
+module.exports = { startSession, discardSession, completeSession, getStatus, savePage, editNavEntry, createPage, loadSession };

@@ -126,8 +126,25 @@ function getWikiNav(wikiId) {
   return { name: yml.site_name, nav: yml.nav || [] };
 }
 
-function preprocessTabs(markdown) {
+function hasAlternateTabStyle(yml) {
+  // Check if pymdownx.tabbed has alternate_style: true in the mkdocs.yml
+  const extensions = yml?.markdown_extensions;
+  if (!Array.isArray(extensions)) return false;
+  for (const ext of extensions) {
+    if (typeof ext === 'object' && ext['pymdownx.tabbed']) {
+      return ext['pymdownx.tabbed'].alternate_style === true;
+    }
+  }
+  return false;
+}
+
+function preprocessTabs(markdown, yml) {
+  // Only process === "Title" tab syntax if the wiki has alternate_style: true
+  if (!hasAlternateTabStyle(yml)) return markdown;
+
   // Convert MkDocs tabbed syntax (=== "Title") into HTML tabs
+  // MkDocs requires a blank line between === "Title" and the indented content.
+  // We enforce this: if no blank line follows, it's not valid tab syntax.
   const lines = markdown.split('\n');
   const result = [];
   let i = 0;
@@ -135,6 +152,14 @@ function preprocessTabs(markdown) {
   while (i < lines.length) {
     const tabMatch = lines[i].match(/^===\s+"([^"]+)"\s*$/);
     if (!tabMatch) {
+      result.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    // Verify this is valid tab syntax: next line must be blank
+    if (i + 1 >= lines.length || lines[i + 1].trim() !== '') {
+      // No blank line after === — not valid MkDocs tab syntax, output as-is
       result.push(lines[i]);
       i++;
       continue;
@@ -160,6 +185,15 @@ function preprocessTabs(markdown) {
 
       const title = match[1];
       i++;
+
+      // Valid MkDocs tabs require a blank line after === "Title"
+      if (i >= lines.length || lines[i].trim() !== '') {
+        // No blank line — invalid tab, treat this tab as having no content
+        tabs.push({ title, content: '' });
+        continue;
+      }
+      i++; // skip the blank line
+
       const contentLines = [];
 
       // Collect indented content lines (4 spaces or 1 tab)
@@ -218,7 +252,7 @@ function getWikiPage(wikiId, pagePath) {
   if (!fs.existsSync(filePath)) return null;
 
   const mdContent = fs.readFileSync(filePath, 'utf8');
-  const preprocessed = preprocessTabs(mdContent);
+  const preprocessed = preprocessTabs(mdContent, yml);
   let html = marked.parse(preprocessed);
 
   // Rewrite relative image paths to use the media API route
@@ -315,20 +349,16 @@ function getWikiPageList(wikiId, excludePage) {
   return pages;
 }
 
-function buildTieredContext(wikiId, query, excludePage) {
+function extractKeywords(query) {
   const stopWords = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'how', 'what', 'when', 'where', 'which', 'who', 'will', 'with', 'this', 'that', 'from', 'they', 'would', 'there', 'their', 'about', 'could', 'does', 'should']);
-  const keywords = query.toLowerCase()
+  return query.toLowerCase()
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3 && !stopWords.has(w));
+}
 
-  if (keywords.length === 0) return '';
-
-  const pages = getWikiPageList(wikiId, excludePage);
-  if (pages.length === 0) return '';
-
-  // Score pages by keyword matches in title and content
-  const scored = pages.map(page => {
+function scorePages(pages, keywords) {
+  return pages.map(page => {
     const lowerTitle = page.title.toLowerCase();
     const lowerContent = page.content.toLowerCase();
     let titleScore = 0;
@@ -339,19 +369,19 @@ function buildTieredContext(wikiId, query, excludePage) {
     }
     return { ...page, titleScore, contentScore, totalScore: titleScore * 3 + contentScore };
   }).filter(p => p.totalScore > 0);
+}
 
-  scored.sort((a, b) => b.totalScore - a.totalScore);
-
+function formatTieredContext(scored, budget = 3000) {
   if (scored.length === 0) return '';
 
   let context = '\n\n--- RELEVANT WIKI CONTEXT ---\n';
-  let budget = 3000; // character budget for additional context
 
   // Tier 1: Page titles of all matched pages (very cheap)
   const titleMatched = scored.slice(0, 15);
   context += `\nRelevant pages found:\n`;
   for (const page of titleMatched) {
-    const line = `- ${page.path}: "${page.title}"\n`;
+    const wikiLabel = page.wikiId ? `[${page.wikiId}] ` : '';
+    const line = `- ${wikiLabel}${page.path}: "${page.title}"\n`;
     context += line;
     budget -= line.length;
   }
@@ -362,7 +392,8 @@ function buildTieredContext(wikiId, query, excludePage) {
   for (const page of topPages) {
     const headers = extractHeaders(page.content);
     if (headers.length > 0) {
-      const headerBlock = `\n## ${page.path}\n${headers.map(h => `- ${h}`).join('\n')}\n`;
+      const wikiLabel = page.wikiId ? `[${page.wikiId}] ` : '';
+      const headerBlock = `\n## ${wikiLabel}${page.path}\n${headers.map(h => `- ${h}`).join('\n')}\n`;
       if (headerBlock.length > budget) break;
       context += headerBlock;
       budget -= headerBlock.length;
@@ -372,13 +403,49 @@ function buildTieredContext(wikiId, query, excludePage) {
   // Tier 3: Content snippet from the single best match
   if (budget > 200 && scored.length > 0) {
     const best = scored[0];
+    const wikiLabel = best.wikiId ? `[${best.wikiId}] ` : '';
     const snippet = best.content.length > budget
       ? best.content.slice(0, budget) + '\n[...truncated...]'
       : best.content;
-    context += `\n\nFull content of best match (${best.path}):\n${snippet}`;
+    context += `\n\nFull content of best match (${wikiLabel}${best.path}):\n${snippet}`;
   }
 
   return context;
+}
+
+function buildTieredContext(wikiId, query, excludePage) {
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) return '';
+
+  const pages = getWikiPageList(wikiId, excludePage);
+  if (pages.length === 0) return '';
+
+  const scored = scorePages(pages, keywords);
+  scored.sort((a, b) => b.totalScore - a.totalScore);
+
+  return formatTieredContext(scored);
+}
+
+function buildTieredContextAllWikis(query) {
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) return '';
+
+  const wikis = listWikis();
+  let allScored = [];
+
+  for (const wiki of wikis) {
+    const pages = getWikiPageList(wiki.id, null);
+    const scored = scorePages(pages, keywords);
+    // Tag each result with its wiki ID
+    for (const page of scored) {
+      page.wikiId = wiki.id;
+    }
+    allScored = allScored.concat(scored);
+  }
+
+  allScored.sort((a, b) => b.totalScore - a.totalScore);
+
+  return formatTieredContext(allScored);
 }
 
 async function fetchWithRetry(url, options, retries = 2) {
@@ -395,15 +462,43 @@ async function fetchWithRetry(url, options, retries = 2) {
 }
 
 async function chat(messages, wiki, currentPage, pageContent, { enableEditing = false, model = 'gpt-4o' } = {}) {
+  let result = {};
+  await chatStream(messages, wiki, currentPage, pageContent, {
+    enableEditing,
+    model,
+    onStatus() {},
+    onToken() {},
+    onDone(r) { result = r; },
+  });
+  return result;
+}
+
+async function chatStream(messages, wiki, currentPage, pageContent, { enableEditing = false, model = 'gpt-4o', onStatus, onToken, onDone } = {}) {
+  onStatus('Authenticating with GitHub...');
   const ghToken = execSync('gh auth token', { encoding: 'utf8' }).trim();
 
-  let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. You have access to the entire wiki section the user is browsing, not just the current page. Be concise and helpful. When referencing other wiki pages, use markdown links with the page path.`;
+  let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. You have access to the entire wiki section the user is browsing, not just the current page. Be concise and helpful. When referencing other wiki pages, use markdown links with the page path.\n\nYou can read files and list directories anywhere on the user's computer using the read_file and list_directory tools. Use these when the user asks you to look at files, check paths, or explore the file system.`;
 
   if (enableEditing) {
-    systemMessage += `\n\nYou can edit the current wiki page when the user asks you to make changes. Use the edit_page tool to apply edits. When editing, output the FULL updated page content (not just the changed part). Only edit when the user explicitly asks for a change.\n\nYou can also rename navigation menu entries using the edit_nav_entry tool. Use it when the user asks to translate or rename a menu item. The old_title must match exactly as shown in the wiki navigation structure above.`;
+    systemMessage += `\n\nYou can edit the current wiki page when the user asks you to make changes. Use the edit_page tool to apply edits. When editing, output the FULL updated page content (not just the changed part). Only edit when the user explicitly asks for a change.\n\nYou can also rename navigation menu entries using the edit_nav_entry tool. Use it when the user asks to translate or rename a menu item. The old_title must match exactly as shown in the wiki navigation structure above.\n\nYou can create new wiki pages using the create_page tool. Use it when the user asks to create a new page. Provide the file path (relative to the docs directory, e.g. "howto/my-new-page.md"), a navigation title, and the full markdown content for the new page.`;
+
+    // Add tab syntax instructions based on wiki configuration
+    if (wiki) {
+      const docsRoot = getDocsRoot();
+      const ymlPath = path.join(docsRoot, wiki, 'mkdocs.yml');
+      if (fs.existsSync(ymlPath)) {
+        const yml = loadYaml(ymlPath);
+        if (hasAlternateTabStyle(yml)) {
+          systemMessage += `\n\nIMPORTANT — MkDocs Content Tabs syntax:\nThis wiki supports tabbed content (pymdownx.tabbed with alternate_style). When writing tabbed content, you MUST follow this exact format:\n\n=== "Tab Title 1"\n\n    Content for tab 1 (indented 4 spaces)\n\n=== "Tab Title 2"\n\n    Content for tab 2 (indented 4 spaces)\n\nCritical rules:\n- There MUST be a blank line between === "Title" and the indented content.\n- Tab content MUST be indented by exactly 4 spaces.\n- If tabs are nested inside an admonition (??? or !!!), add 4 more spaces for the admonition level:\n\n??? note "Example"\n    === "Tab 1"\n\n        Content (8 spaces: 4 for admonition + 4 for tab)\n\n    === "Tab 2"\n\n        Content (8 spaces: 4 for admonition + 4 for tab)\n\nWithout the blank line after ===, tabs will NOT render on the deployed wiki.`;
+        } else {
+          systemMessage += `\n\nIMPORTANT: This wiki does NOT support the === "Title" content tabs syntax (pymdownx.tabbed alternate_style is not enabled). Do NOT use === "Tab Name" syntax. Instead, use headings or bold text to separate content that might otherwise be tabbed.`;
+        }
+      }
+    }
   }
 
   if (wiki) {
+    onStatus('Loading wiki structure...');
     const docsRoot = getDocsRoot();
     const ymlPath = path.join(docsRoot, wiki, 'mkdocs.yml');
     if (fs.existsSync(ymlPath)) {
@@ -415,6 +510,8 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
         systemMessage += `\n\nWiki navigation structure:\n${navTrimmed}`;
       }
     }
+  } else {
+    systemMessage += `\n\nNo specific wiki is selected. You have access to search across ALL available wikis. When you find relevant content, mention which wiki it came from (shown in [brackets] in the context). When linking to wiki pages, use the format [title](wikiId:path/to/page.md) — for example [CPM Tests](winformswiki:howto/cpm-tests.md).`;
   }
 
   if (currentPage) {
@@ -435,16 +532,59 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
   }
 
   // Build tiered context from relevant wiki pages
-  if (wiki && messages.length > 0) {
+  if (messages.length > 0) {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
     if (lastUserMsg) {
-      systemMessage += buildTieredContext(wiki, lastUserMsg.content, currentPage);
+      if (wiki) {
+        onStatus('Searching wiki for relevant pages...');
+        systemMessage += buildTieredContext(wiki, lastUserMsg.content, currentPage);
+      } else {
+        onStatus('Searching all wikis for relevant pages...');
+        systemMessage += buildTieredContextAllWikis(lastUserMsg.content);
+      }
     }
   }
 
   const chatMessages = [{ role: 'system', content: systemMessage }, ...messages];
 
-  const tools = enableEditing && currentPage ? [
+  const fsTools = [
+    {
+      type: 'function',
+      function: {
+        name: 'read_file',
+        description: 'Read the contents of a file at any path on the computer.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'The absolute or relative file path to read'
+            }
+          },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_directory',
+        description: 'List files and directories at a given path on the computer.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description: 'The absolute or relative directory path to list'
+            }
+          },
+          required: ['path']
+        }
+      }
+    }
+  ];
+
+  const editTools = enableEditing && currentPage ? [
     {
       type: 'function',
       function: {
@@ -491,10 +631,44 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
         }
       }
     }
-  ] : undefined;
+  ] : [];
 
-  const requestBody = { model, messages: chatMessages };
-  if (tools) requestBody.tools = tools;
+  const createTools = enableEditing && wiki ? [
+    {
+      type: 'function',
+      function: {
+        name: 'create_page',
+        description: 'Create a new wiki page. Creates the markdown file and adds a navigation entry in mkdocs.yml.',
+        parameters: {
+          type: 'object',
+          properties: {
+            page_path: {
+              type: 'string',
+              description: 'The file path for the new page relative to the docs directory (e.g. "howto/my-new-page.md")'
+            },
+            title: {
+              type: 'string',
+              description: 'The navigation title for the new page'
+            },
+            content: {
+              type: 'string',
+              description: 'The full markdown content for the new page'
+            },
+            summary: {
+              type: 'string',
+              description: 'A brief summary of what the new page is about'
+            }
+          },
+          required: ['page_path', 'title', 'content', 'summary']
+        }
+      }
+    }
+  ] : [];
+
+  const tools = [...fsTools, ...editTools, ...createTools];
+
+  onStatus(`Sending request to ${model}...`);
+  const requestBody = { model, messages: chatMessages, tools };
 
   const chatRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
     method: 'POST',
@@ -513,18 +687,64 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
   const chatData = await chatRes.json();
   const choice = chatData.choices?.[0];
 
-  if (!choice) return { reply: 'No response.' };
+  if (!choice) { onDone({ reply: 'No response.' }); return; }
+
+  // No tool calls — emit the text token by token
+  if (choice.finish_reason !== 'tool_calls' || !choice.message.tool_calls) {
+    const text = choice.message?.content || 'No response.';
+    onStatus('Generating response...');
+    const words = text.split(/(\s+)/);
+    for (const word of words) { onToken(word); }
+    onDone({ reply: '__streamed__', edited: false });
+    return;
+  }
 
   // Handle tool calls
-  if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
-    const toolResults = [];
-    let editSummary = '';
-    let anyEdited = false;
+  const toolResults = [];
+  let editSummary = '';
+  let anyEdited = false;
 
-    for (const toolCall of choice.message.tool_calls) {
+  for (const toolCall of choice.message.tool_calls) {
       const args = JSON.parse(toolCall.function.arguments);
 
-      if (toolCall.function.name === 'edit_page') {
+      if (toolCall.function.name === 'read_file') {
+        onStatus(`Reading file: ${args.path}`);
+        try {
+          const filePath = path.resolve(args.path);
+          const content = fs.readFileSync(filePath, 'utf8');
+          const trimmed = content.length > 20000 ? content.slice(0, 20000) + '\n\n[...truncated at 20000 chars...]' : content;
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: trimmed
+          });
+        } catch (err) {
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: err.message })
+          });
+        }
+      } else if (toolCall.function.name === 'list_directory') {
+        onStatus(`Listing directory: ${args.path}`);
+        try {
+          const dirPath = path.resolve(args.path);
+          const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+          const listing = entries.map(e => (e.isDirectory() ? `[dir]  ${e.name}` : `[file] ${e.name}`)).join('\n');
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: listing || '(empty directory)'
+          });
+        } catch (err) {
+          toolResults.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: err.message })
+          });
+        }
+      } else if (toolCall.function.name === 'edit_page') {
+        onStatus(`Editing page: ${currentPage}`);
         const { startSession, savePage, loadSession } = require('./editing');
         if (!loadSession()) {
           startSession();
@@ -538,6 +758,7 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
         editSummary = args.summary;
         anyEdited = true;
       } else if (toolCall.function.name === 'edit_nav_entry') {
+        onStatus(`Renaming nav entry: "${args.old_title}" → "${args.new_title}"`);
         const { editNavEntry, startSession, loadSession } = require('./editing');
         if (!loadSession()) {
           startSession();
@@ -550,38 +771,127 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
         });
         editSummary = args.summary;
         anyEdited = true;
-      }
+      } else if (toolCall.function.name === 'create_page') {
+        onStatus(`Creating page: ${args.page_path}`);
+        const { createPage, startSession, loadSession } = require('./editing');
+        if (!loadSession()) {
+          startSession();
+        }
+        createPage(wiki, args.page_path, args.title, args.content);
+        toolResults.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ success: true, path: args.page_path, title: args.title, summary: args.summary })
+        });
+        editSummary = args.summary;
+      anyEdited = true;
     }
+  }
 
-    if (toolResults.length > 0) {
-      // Get a follow-up response from the AI confirming the edits
-      const followUpMessages = [
-        ...chatMessages,
-        choice.message,
-        ...toolResults
-      ];
+  if (toolResults.length > 0) {
+    // Get a follow-up response from the AI after tool execution
+    let followUpMessages = [
+      ...chatMessages,
+      choice.message,
+      ...toolResults
+    ];
 
+    // Allow up to 5 follow-up tool rounds (for multi-step file exploration)
+    for (let round = 0; round < 5; round++) {
+      onStatus(`Calling ${model} (follow-up round ${round + 1})...`);
       const followUpRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${ghToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ model, messages: followUpMessages })
+        body: JSON.stringify({ model, messages: followUpMessages, tools })
       });
 
-      let reply = `✅ ${editSummary}`;
-      if (followUpRes.ok) {
-        const followUpData = await followUpRes.json();
-        const followUpContent = followUpData.choices?.[0]?.message?.content;
-        if (followUpContent) reply = followUpContent;
+      if (!followUpRes.ok) break;
+
+      const followUpData = await followUpRes.json();
+      const followUpChoice = followUpData.choices?.[0];
+      if (!followUpChoice) break;
+
+      // If the follow-up also wants to call tools, execute them
+      if (followUpChoice.finish_reason === 'tool_calls' && followUpChoice.message.tool_calls) {
+        const moreResults = [];
+        followUpMessages.push(followUpChoice.message);
+
+        for (const toolCall of followUpChoice.message.tool_calls) {
+          const args = JSON.parse(toolCall.function.arguments);
+          if (toolCall.function.name === 'read_file') {
+            onStatus(`Reading file: ${args.path}`);
+            try {
+              const filePath = path.resolve(args.path);
+              const content = fs.readFileSync(filePath, 'utf8');
+              const trimmed = content.length > 20000 ? content.slice(0, 20000) + '\n\n[...truncated at 20000 chars...]' : content;
+              moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: trimmed });
+            } catch (err) {
+              moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: err.message }) });
+            }
+          } else if (toolCall.function.name === 'list_directory') {
+            onStatus(`Listing directory: ${args.path}`);
+            try {
+              const dirPath = path.resolve(args.path);
+              const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+              const listing = entries.map(e => (e.isDirectory() ? `[dir]  ${e.name}` : `[file] ${e.name}`)).join('\n');
+              moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: listing || '(empty directory)' });
+            } catch (err) {
+              moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: err.message }) });
+            }
+          } else if (toolCall.function.name === 'edit_page') {
+            onStatus(`Editing page: ${currentPage}`);
+            const { startSession, savePage, loadSession } = require('./editing');
+            if (!loadSession()) startSession();
+            savePage(wiki, currentPage, args.content);
+            moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ success: true, summary: args.summary }) });
+            editSummary = args.summary;
+            anyEdited = true;
+          } else if (toolCall.function.name === 'edit_nav_entry') {
+            onStatus(`Renaming nav entry: "${args.old_title}" → "${args.new_title}"`);
+            const { editNavEntry, startSession, loadSession } = require('./editing');
+            if (!loadSession()) startSession();
+            editNavEntry(wiki, args.old_title, args.new_title);
+            moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ success: true, summary: args.summary }) });
+            editSummary = args.summary;
+            anyEdited = true;
+          } else if (toolCall.function.name === 'create_page') {
+            onStatus(`Creating page: ${args.page_path}`);
+            const { createPage, startSession, loadSession } = require('./editing');
+            if (!loadSession()) startSession();
+            createPage(wiki, args.page_path, args.title, args.content);
+            moreResults.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ success: true, path: args.page_path, title: args.title, summary: args.summary }) });
+            editSummary = args.summary;
+            anyEdited = true;
+          }
+        }
+
+        followUpMessages.push(...moreResults);
+        continue;
       }
 
-      return { reply, edited: anyEdited, summary: editSummary };
+      // Final text response — emit token by token
+      const followUpContent = followUpChoice.message?.content;
+      if (followUpContent) {
+        onStatus('Generating response...');
+        const words = followUpContent.split(/(\s+)/);
+        for (const word of words) {
+          onToken(word);
+        }
+        onDone({ reply: '__streamed__', edited: anyEdited, summary: editSummary });
+        return;
+      }
+      let reply = anyEdited ? `✅ ${editSummary}` : 'No response.';
+      onDone({ reply, edited: anyEdited, summary: editSummary });
+      return;
     }
-  }
 
-  return { reply: choice.message.content || 'No response.' };
+    // If we exhausted rounds, return what we have
+    const reply = anyEdited ? `✅ ${editSummary}` : 'I explored the files but could not produce a final answer.';
+    onDone({ reply, edited: anyEdited, summary: editSummary });
+  }
 }
 
-module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, getDocsRoot, syncRepo };
+module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, chatStream, getDocsRoot, syncRepo };

@@ -111,6 +111,10 @@ function HomePageContent() {
       if (data.error) throw new Error(data.error);
       setEditSession(null);
       setEditing(false);
+      // Reload the current page to restore original content
+      if (currentPagePath && currentWiki) {
+        loadPage(currentPagePath);
+      }
       toast({ title: 'Editing session discarded', status: 'info', duration: 3000 });
     } catch (err) {
       toast({ title: 'Failed to discard', description: err.message, status: 'error', duration: 5000 });
@@ -237,6 +241,16 @@ function HomePageContent() {
     setCurrentPagePath(pagePath);
     setCurrentPageMarkdown(data.markdown);
     updateUrl(currentWiki, pagePath);
+  }
+
+  async function loadPageInWiki(wikiId, pagePath) {
+    const res = await fetch(`/api/wikis/${wikiId}/page/${pagePath}`);
+    if (!res.ok) { setPage({ error: 'Page not found' }); return; }
+    const data = await res.json();
+    setPage(data);
+    setCurrentPagePath(pagePath);
+    setCurrentPageMarkdown(data.markdown);
+    updateUrl(wikiId, pagePath);
   }
 
   function handleSearch(q) {
@@ -391,6 +405,14 @@ function HomePageContent() {
                   setSyncing(true);
                   try {
                     await fetch('/api/sync', { method: 'POST' });
+                    if (currentWiki) {
+                      const navRes = await fetch(`/api/wikis/${currentWiki}/nav`);
+                      const navData = await navRes.json();
+                      setNav(navData);
+                      if (currentPagePath) {
+                        await loadPage(currentPagePath);
+                      }
+                    }
                   } catch {}
                   setSyncing(false);
                 }}
@@ -445,7 +467,15 @@ function HomePageContent() {
             wiki={currentWiki}
             currentPage={currentPagePath}
             pageContent={currentPageMarkdown}
-            onNavigate={loadPage}
+            onNavigate={(pagePath, targetWiki) => {
+              if (targetWiki && targetWiki !== currentWiki) {
+                selectWiki(targetWiki).then(() => {
+                  loadPageInWiki(targetWiki, pagePath);
+                });
+              } else {
+                loadPage(pagePath);
+              }
+            }}
             onPageEdited={() => {
               // Refresh the page content, nav, and edit session status after AI edit
               if (currentPagePath) loadPage(currentPagePath);
