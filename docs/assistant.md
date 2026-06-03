@@ -39,6 +39,15 @@ When you send a message, the system searches wiki pages for relevant content and
 
 This means the AI can answer questions that span multiple wiki pages, not just the one you're reading.
 
+### Embeddings-Based Search
+
+Page relevance is determined using **semantic embeddings** (via `text-embedding-3-small` on the GitHub Models API). This allows the AI to find relevant pages even when the query uses different phrasing than the page content.
+
+- **Indexing**: Embeddings are generated automatically on first chat with a wiki, and re-indexed after each sync (only changed pages are re-embedded).
+- **Fallback**: If embeddings are not yet built or the API is unavailable, the system falls back to keyword-based matching.
+- **Manual indexing**: `POST /api/embeddings/index` (optionally with `{"wiki": "wikiId"}`) triggers indexing. `GET /api/embeddings/index` shows indexing status.
+- **Storage**: Embeddings are stored in `~/.wiki-dx-viewer/embeddings/`.
+
 ### Cross-Wiki Search (No Wiki Selected)
 
 When no specific wiki is selected, the AI searches across **all available wikis** for relevant content. Results are labeled with their source wiki (e.g. `[winformswiki]`) so you know where the information came from.

@@ -3,7 +3,7 @@ const { chatStream } = require('@/lib/wiki');
 
 export async function POST(request) {
   try {
-    const { messages, wiki, currentPage, pageContent, enableEditing, model } = await request.json();
+    const { messages, wiki, currentPage, pageContent, enableEditing, model, source } = await request.json();
     if (!messages || !messages.length) {
       return NextResponse.json({ error: 'No messages' }, { status: 400 });
     }
@@ -19,6 +19,7 @@ export async function POST(request) {
           await chatStream(messages, wiki, currentPage, pageContent, {
             enableEditing: !!enableEditing,
             model: model || 'gpt-4o',
+            source: source || 'github',
             onStatus(text) {
               send('status', { text });
             },

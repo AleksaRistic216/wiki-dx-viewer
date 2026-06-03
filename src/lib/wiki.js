@@ -6,6 +6,7 @@ const { Marked } = require('marked');
 const { gfmHeadingId } = require('marked-gfm-heading-id');
 const hljs = require('highlight.js');
 const { execSync } = require('child_process');
+const embeddings = require('./embeddings');
 
 const WIKI_REPO_URL = 'https://github.com/DevExpress/wiki-dx.git';
 const DATA_DIR = path.join(os.homedir(), '.wiki-dx-viewer');
@@ -413,7 +414,7 @@ function formatTieredContext(scored, budget = 3000) {
   return context;
 }
 
-function buildTieredContext(wikiId, query, excludePage) {
+function buildTieredContextKeyword(wikiId, query, excludePage) {
   const keywords = extractKeywords(query);
   if (keywords.length === 0) return '';
 
@@ -426,7 +427,7 @@ function buildTieredContext(wikiId, query, excludePage) {
   return formatTieredContext(scored);
 }
 
-function buildTieredContextAllWikis(query) {
+function buildTieredContextAllWikisKeyword(query) {
   const keywords = extractKeywords(query);
   if (keywords.length === 0) return '';
 
@@ -436,7 +437,6 @@ function buildTieredContextAllWikis(query) {
   for (const wiki of wikis) {
     const pages = getWikiPageList(wiki.id, null);
     const scored = scorePages(pages, keywords);
-    // Tag each result with its wiki ID
     for (const page of scored) {
       page.wikiId = wiki.id;
     }
@@ -446,6 +446,59 @@ function buildTieredContextAllWikis(query) {
   allScored.sort((a, b) => b.totalScore - a.totalScore);
 
   return formatTieredContext(allScored);
+}
+
+async function buildTieredContext(wikiId, query, excludePage) {
+  // Try embeddings-based search first
+  if (embeddings.hasIndex(wikiId)) {
+    try {
+      const results = await embeddings.searchByEmbedding(wikiId, query, { topK: 15 });
+      if (results && results.length > 0) {
+        console.log(`[search] Embeddings matched (top 5): ${results.slice(0, 5).map(r => `${r.path} (${r.similarity.toFixed(3)})`).join(', ')}`);
+        const pages = getWikiPageList(wikiId, excludePage);
+        const pageMap = new Map(pages.map(p => [p.path, p]));
+        const scored = results
+          .filter(r => r.path !== excludePage && pageMap.has(r.path))
+          .map(r => ({
+            ...pageMap.get(r.path),
+            totalScore: r.similarity,
+          }));
+        if (scored.length > 0) return formatTieredContext(scored);
+      }
+    } catch (err) {
+      console.log(`[search] Embeddings failed, falling back to keywords: ${err.message}`);
+    }
+  } else {
+    console.log(`[search] No embedding index for "${wikiId}", using keyword search`);
+  }
+
+  return buildTieredContextKeyword(wikiId, query, excludePage);
+}
+
+async function buildTieredContextAllWikis(query) {
+  const wikis = listWikis();
+  const wikiIds = wikis.map(w => w.id);
+
+  // Try embeddings-based search first
+  try {
+    const results = await embeddings.searchAllWikisByEmbedding(wikiIds, query, { topK: 15 });
+    if (results && results.length > 0) {
+      // Load full page content for the top results
+      const scored = [];
+      for (const r of results) {
+        const pages = getWikiPageList(r.wikiId, null);
+        const page = pages.find(p => p.path === r.path);
+        if (page) {
+          scored.push({ ...page, wikiId: r.wikiId, totalScore: r.similarity });
+        }
+      }
+      if (scored.length > 0) return formatTieredContext(scored);
+    }
+  } catch {
+    // Fall through to keyword search
+  }
+
+  return buildTieredContextAllWikisKeyword(query);
 }
 
 async function fetchWithRetry(url, options, retries = 2) {
@@ -473,9 +526,13 @@ async function chat(messages, wiki, currentPage, pageContent, { enableEditing = 
   return result;
 }
 
-async function chatStream(messages, wiki, currentPage, pageContent, { enableEditing = false, model = 'gpt-4o', onStatus, onToken, onDone } = {}) {
-  onStatus('Authenticating with GitHub...');
-  const ghToken = execSync('gh auth token', { encoding: 'utf8' }).trim();
+async function chatStream(messages, wiki, currentPage, pageContent, { enableEditing = false, model = 'gpt-4o', source = 'github', onStatus, onToken, onDone } = {}) {
+  const OLLAMA_BASE = process.env.OLLAMA_URL || 'http://localhost:11434';
+  let ghToken = null;
+  if (source === 'github') {
+    onStatus('Authenticating with GitHub...');
+    ghToken = execSync('gh auth token', { encoding: 'utf8' }).trim();
+  }
 
   let systemMessage = `You are a helpful assistant for the DevExpress internal wiki system. You help users navigate, understand, and find information in the wiki content. You have access to the entire wiki section the user is browsing, not just the current page. Be concise and helpful. When referencing other wiki pages, use markdown links with the page path.\n\nYou can read files and list directories anywhere on the user's computer using the read_file and list_directory tools. Use these when the user asks you to look at files, check paths, or explore the file system.`;
 
@@ -536,16 +593,56 @@ async function chatStream(messages, wiki, currentPage, pageContent, { enableEdit
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
     if (lastUserMsg) {
       if (wiki) {
+        // Auto-index on first chat if no embeddings exist
+        if (!embeddings.hasIndex(wiki)) {
+          onStatus('Building search index (first time)...');
+          try {
+            const pages = getWikiPageList(wiki, null);
+            await embeddings.indexPages(wiki, pages);
+          } catch { /* non-fatal */ }
+        }
         onStatus('Searching wiki for relevant pages...');
-        systemMessage += buildTieredContext(wiki, lastUserMsg.content, currentPage);
+        systemMessage += await buildTieredContext(wiki, lastUserMsg.content, currentPage);
       } else {
+        // Auto-index all wikis that don't have an index yet
+        const allWikis = listWikis();
+        const unindexed = allWikis.filter(w => !embeddings.hasIndex(w.id));
+        if (unindexed.length > 0) {
+          onStatus(`Building search index (first time, ${unindexed.length} wikis)...`);
+          for (const w of unindexed) {
+            try {
+              const pages = getWikiPageList(w.id, null);
+              await embeddings.indexPages(w.id, pages);
+            } catch { /* non-fatal, continue with others */ }
+          }
+        }
         onStatus('Searching all wikis for relevant pages...');
-        systemMessage += buildTieredContextAllWikis(lastUserMsg.content);
+        systemMessage += await buildTieredContextAllWikis(lastUserMsg.content);
       }
     }
   }
 
   const chatMessages = [{ role: 'system', content: systemMessage }, ...messages];
+
+  // Debug logging
+  const totalChars = chatMessages.reduce((sum, m) => sum + (m.content || '').length, 0);
+  const estimatedTokens = Math.ceil(totalChars / 4);
+  const contextMarker = '--- RELEVANT WIKI CONTEXT ---';
+  const contextStart = systemMessage.indexOf(contextMarker);
+  const wikiContextChars = contextStart >= 0 ? systemMessage.length - contextStart : 0;
+  const basePromptChars = contextStart >= 0 ? contextStart : systemMessage.length;
+  console.log('\n--- CHAT REQUEST ---');
+  console.log(`Wiki: ${wiki || '(all)'} | Page: ${currentPage || '(none)'} | Model: ${model}`);
+  console.log(`Total: ${totalChars} chars (~${estimatedTokens} tokens)`);
+  console.log(`  Base prompt: ${basePromptChars} chars | Wiki context: ${wikiContextChars} chars | Conversation: ${messages.length} msgs (${messages.reduce((s, m) => s + (m.content || '').length, 0)} chars)`);
+  const lastUser = [...messages].reverse().find(m => m.role === 'user');
+  if (lastUser) console.log(`Last user msg: "${lastUser.content.slice(0, 100)}${lastUser.content.length > 100 ? '...' : ''}"`);
+  if (contextStart >= 0) {
+    const contextSection = systemMessage.slice(contextStart);
+    console.log(`Context found:\n${contextSection}`);
+  } else {
+    console.log('No relevant wiki context found.');
+  }
 
   const fsTools = [
     {
@@ -668,16 +765,30 @@ async function chatStream(messages, wiki, currentPage, pageContent, { enableEdit
   const tools = [...fsTools, ...editTools, ...createTools];
 
   onStatus(`Sending request to ${model}...`);
-  const requestBody = { model, messages: chatMessages, tools };
+  const requestBody = source === 'ollama'
+    ? { model, messages: chatMessages, ...(tools.length > 0 ? { tools } : {}) }
+    : { model, messages: chatMessages, tools };
 
-  const chatRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${ghToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(requestBody)
-  });
+  async function callModel(body) {
+    if (source === 'ollama') {
+      return await fetch(`${OLLAMA_BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } else {
+      return await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ghToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+    }
+  }
+
+  const chatRes = await callModel(requestBody);
 
   if (!chatRes.ok) {
     const err = await chatRes.text();
@@ -799,14 +910,7 @@ async function chatStream(messages, wiki, currentPage, pageContent, { enableEdit
     // Allow up to 5 follow-up tool rounds (for multi-step file exploration)
     for (let round = 0; round < 5; round++) {
       onStatus(`Calling ${model} (follow-up round ${round + 1})...`);
-      const followUpRes = await fetchWithRetry('https://models.inference.ai.azure.com/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${ghToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model, messages: followUpMessages, tools })
-      });
+      const followUpRes = await callModel({ model, messages: followUpMessages, tools });
 
       if (!followUpRes.ok) break;
 
@@ -894,4 +998,4 @@ async function chatStream(messages, wiki, currentPage, pageContent, { enableEdit
   }
 }
 
-module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, chatStream, getDocsRoot, syncRepo };
+module.exports = { listWikis, getWikiNav, getWikiPage, searchWiki, chat, chatStream, getDocsRoot, syncRepo, getWikiPageList };

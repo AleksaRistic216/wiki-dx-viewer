@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Box,
   Flex,
@@ -42,6 +42,7 @@ export default function HomePage() {
 
 function HomePageContent() {
   const params = useParams();
+  const router = useRouter();
   const toast = useToast();
 
   // Parse wiki and page from URL path: /wiki/page/subpage/...
@@ -64,6 +65,7 @@ function HomePageContent() {
   const { colorMode, toggleColorMode } = useColorMode();
   const searchTimeout = useRef(null);
   const initialLoadDone = useRef(false);
+  const selfNavigating = useRef(false);
 
   // Editing session state
   const [editSession, setEditSession] = useState(null);
@@ -79,15 +81,17 @@ function HomePageContent() {
   const borderColor = useColorModeValue('gray.200', 'gray.700');
   const searchHoverBg = useColorModeValue('gray.100', 'gray.700');
 
-  // Check editing session status on mount
+  // Check editing session status on mount and whenever URL params change
+  // (Next.js may remount this component on navigation)
   useEffect(() => {
     fetch('/api/edit/status')
       .then(r => r.json())
       .then(data => {
         if (data.active) setEditSession(data);
+        else setEditSession(null);
       })
       .catch(() => {});
-  }, []);
+  }, [urlWiki, urlPage]);
 
   async function startEditing() {
     setEditLoading(true);
@@ -181,14 +185,15 @@ function HomePageContent() {
     setEditContent('');
   }
 
-  const updateUrl = useCallback((wiki, pagePath) => {
+  const navigateTo = useCallback((wiki, pagePath) => {
     let path = '/';
     if (wiki) {
       path = `/${wiki}`;
       if (pagePath) path += `/${pagePath}`;
     }
-    window.history.replaceState(null, '', path);
-  }, []);
+    selfNavigating.current = true;
+    router.push(path);
+  }, [router]);
 
   useEffect(() => {
     fetch('/api/wikis')
@@ -221,12 +226,52 @@ function HomePageContent() {
     }
   }, [urlWiki, urlPage]);
 
+  // Sync state when URL changes (e.g. browser back/forward)
+  useEffect(() => {
+    if (!initialLoadDone.current) return;
+    if (selfNavigating.current) {
+      selfNavigating.current = false;
+      return;
+    }
+    if (urlWiki !== currentWiki) {
+      setCurrentWiki(urlWiki);
+      setPage(null);
+      setCurrentPagePath(null);
+      setCurrentPageMarkdown(null);
+      if (urlWiki) {
+        fetch(`/api/wikis/${urlWiki}/nav`)
+          .then(r => r.json())
+          .then(setNav)
+          .catch(() => {});
+      } else {
+        setNav(null);
+      }
+    }
+    if (urlWiki && urlPage !== currentPagePath) {
+      setCurrentPagePath(urlPage);
+      if (urlPage) {
+        fetch(`/api/wikis/${urlWiki}/page/${urlPage}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data) {
+              setPage(data);
+              setCurrentPageMarkdown(data.markdown);
+            }
+          })
+          .catch(() => {});
+      } else {
+        setPage(null);
+        setCurrentPageMarkdown(null);
+      }
+    }
+  }, [urlWiki, urlPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function selectWiki(wikiId) {
     setCurrentWiki(wikiId);
     setPage(null);
     setCurrentPagePath(null);
     setCurrentPageMarkdown(null);
-    updateUrl(wikiId, null);
+    navigateTo(wikiId, null);
     if (!wikiId) { setNav(null); return; }
     const res = await fetch(`/api/wikis/${wikiId}/nav`);
     const data = await res.json();
@@ -240,7 +285,11 @@ function HomePageContent() {
     setPage(data);
     setCurrentPagePath(pagePath);
     setCurrentPageMarkdown(data.markdown);
-    updateUrl(currentWiki, pagePath);
+    // Only push if the URL actually changed
+    const targetPath = `/${currentWiki}/${pagePath}`;
+    if (window.location.pathname !== targetPath) {
+      navigateTo(currentWiki, pagePath);
+    }
   }
 
   async function loadPageInWiki(wikiId, pagePath) {
@@ -250,7 +299,7 @@ function HomePageContent() {
     setPage(data);
     setCurrentPagePath(pagePath);
     setCurrentPageMarkdown(data.markdown);
-    updateUrl(wikiId, pagePath);
+    navigateTo(wikiId, pagePath);
   }
 
   function handleSearch(q) {

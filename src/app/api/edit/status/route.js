@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 const { getStatus } = require('@/lib/editing');
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const status = getStatus();
